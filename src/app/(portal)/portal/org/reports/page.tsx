@@ -17,6 +17,8 @@ type ReportRow = {
   created_at: string | null;
   incident_location: string | null;
   is_spam: boolean | null;
+  reporter_email?: string | null;
+  original_language?: string | null;
 };
 
 type ReportDetails = {
@@ -41,6 +43,55 @@ type ReportDetails = {
   };
 };
 
+type ActionRow = {
+  action_id: number;
+  report_id: number;
+  action_description: string;
+  status: string | null;
+  due_date: string | null;
+  created_at: string | null;
+};
+
+type CommentRow = {
+  comment_id: number;
+  report_id: number;
+  comment_text: string;
+  created_at: string | null;
+  attachment_path?: string | null;
+};
+
+type FeedbackRow = {
+  id: number;
+  report_id: number | null;
+  rate: number | null;
+  recommed_us: boolean | null;
+  created_at: string | null;
+};
+
+type RiskRow = {
+  category_id: number;
+  sub_category_id: number | null;
+  report_categories: { name: string } | null;
+  report_sub_categories: { name: string } | null;
+};
+
+type LanguageRow = {
+  language_id: number;
+  language_code: string;
+  language_name: string;
+};
+
+type RiskCategoryRow = {
+  category_id: number;
+  name: string;
+};
+
+type RiskSubCategoryRow = {
+  sub_category_id: number;
+  category_id: number;
+  name: string;
+};
+
 const tabs = [
   { key: "all", label: "All Reports" },
   { key: "open", label: "Active" },
@@ -58,6 +109,16 @@ const statusOptions = [
   "archived",
 ];
 
+const actionStatusOptions = ["planned", "in_progress", "completed", "blocked"];
+
+const detailSections = [
+  { key: "incident", label: "Incident Details" },
+  { key: "reporter", label: "Reporter Information" },
+  { key: "location", label: "Incident Location" },
+  { key: "risks", label: "Risks" },
+  { key: "supply", label: "Supply Chain Information" },
+];
+
 export default function ReportsPage() {
   const [reports, setReports] = useState<ReportRow[]>([]);
   const [activeTab, setActiveTab] = useState("all");
@@ -68,10 +129,32 @@ export default function ReportsPage() {
   const [viewOpen, setViewOpen] = useState(false);
   const [details, setDetails] = useState<ReportDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
-  const [detailsTab, setDetailsTab] = useState<"details" | "actions" | "activity">("details");
+  const [primaryTab, setPrimaryTab] = useState<
+    "details" | "issue" | "actions" | "services" | "activity"
+  >("details");
+  const [detailTab, setDetailTab] = useState<
+    "incident" | "reporter" | "location" | "risks" | "supply"
+  >("incident");
   const [attachmentLinks, setAttachmentLinks] = useState<
     { path: string; url: string }[]
   >([]);
+  const [commentText, setCommentText] = useState("");
+  const [commentFile, setCommentFile] = useState<File | null>(null);
+  const [comments, setComments] = useState<CommentRow[]>([]);
+  const [feedbacks, setFeedbacks] = useState<FeedbackRow[]>([]);
+  const [actions, setActions] = useState<ActionRow[]>([]);
+  const [actionFilter, setActionFilter] = useState("");
+  const [riskRows, setRiskRows] = useState<RiskRow[]>([]);
+  const [notesText, setNotesText] = useState("");
+  const [languages, setLanguages] = useState<LanguageRow[]>([]);
+  const [translationTarget, setTranslationTarget] = useState("");
+  const [riskCategories, setRiskCategories] = useState<RiskCategoryRow[]>([]);
+  const [riskSubCategories, setRiskSubCategories] = useState<RiskSubCategoryRow[]>([]);
+  const [showIssueForm, setShowIssueForm] = useState(false);
+  const [issueForm, setIssueForm] = useState({ categoryId: "", subCategoryId: "" });
+
+  const truncateText = (value: string, max: number) =>
+    value.length > max ? `${value.slice(0, max).trim()}…` : value;
 
   useEffect(() => {
     let isMounted = true;
@@ -81,7 +164,7 @@ export default function ReportsPage() {
         const { data: rows, error: reportError } = await supabase
           .from("reports")
           .select(
-            "report_id,report_code,title,description,status,created_at,incident_location,is_spam"
+            "report_id,report_code,title,description,status,created_at,incident_location,is_spam,reporter_email,original_language"
           )
           .eq("reported_org_id", context.organizationId)
           .order("created_at", { ascending: false });
@@ -96,6 +179,54 @@ export default function ReportsPage() {
     };
 
     loadReports();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadLanguages = async () => {
+      try {
+        const { data: rows, error: langError } = await supabase
+          .from("languages")
+          .select("language_id,language_code,language_name")
+          .order("language_name");
+        if (langError) throw new Error(langError.message);
+        if (!isMounted) return;
+        setLanguages(rows ?? []);
+      } catch {
+        if (!isMounted) return;
+        setLanguages([]);
+      }
+    };
+    loadLanguages();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadRiskCatalog = async () => {
+      try {
+        const [categoryResult, subCategoryResult] = await Promise.all([
+          supabase.from("report_categories").select("category_id,name").order("name"),
+          supabase
+            .from("report_sub_categories")
+            .select("sub_category_id,category_id,name")
+            .order("name"),
+        ]);
+        if (!isMounted) return;
+        setRiskCategories((categoryResult.data ?? []) as RiskCategoryRow[]);
+        setRiskSubCategories((subCategoryResult.data ?? []) as RiskSubCategoryRow[]);
+      } catch {
+        if (!isMounted) return;
+        setRiskCategories([]);
+        setRiskSubCategories([]);
+      }
+    };
+    loadRiskCatalog();
     return () => {
       isMounted = false;
     };
@@ -145,7 +276,15 @@ export default function ReportsPage() {
       if (reportError) throw new Error(reportError.message);
       if (!reportRow) throw new Error("Report not found.");
       setDetails({ report: reportRow as ReportDetails["report"] });
-      setDetailsTab("details");
+      setPrimaryTab("details");
+      setDetailTab("incident");
+      setCommentText("");
+      setCommentFile(null);
+      setNotesText("");
+      setActionFilter("");
+      setTranslationTarget("");
+      setShowIssueForm(false);
+      setIssueForm({ categoryId: "", subCategoryId: "" });
       setViewOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load report details.");
@@ -190,6 +329,198 @@ export default function ReportsPage() {
       isMounted = false;
     };
   }, [details]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadSupportingData = async () => {
+      if (!details?.report) {
+        setComments([]);
+        setFeedbacks([]);
+        setActions([]);
+        setRiskRows([]);
+        return;
+      }
+
+      const reportId = details.report.report_id;
+      let commentRows: CommentRow[] = [];
+      const commentsWithAttachment = await supabase
+        .from("report_comments")
+        .select("comment_id,report_id,comment_text,attachment_path,created_at")
+        .eq("report_id", reportId)
+        .order("created_at", { ascending: false });
+      if (commentsWithAttachment.error) {
+        const fallback = await supabase
+          .from("report_comments")
+          .select("comment_id,report_id,comment_text,created_at")
+          .eq("report_id", reportId)
+          .order("created_at", { ascending: false });
+        commentRows = (fallback.data ?? []) as CommentRow[];
+      } else {
+        commentRows = (commentsWithAttachment.data ?? []) as CommentRow[];
+      }
+
+      const [feedbackResult, actionResult, riskResult] = await Promise.all([
+        supabase
+          .from("feedbacks")
+          .select("id,report_id,rate,recommed_us,created_at")
+          .eq("report_id", reportId)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("report_actions")
+          .select("action_id,report_id,action_description,status,due_date,created_at")
+          .eq("report_id", reportId)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("report_risk_categories")
+          .select("category_id,sub_category_id,report_categories(name),report_sub_categories(name)")
+          .eq("report_id", reportId),
+      ]);
+
+      if (!isMounted) return;
+      setComments(commentRows);
+      setFeedbacks((feedbackResult.data ?? []) as FeedbackRow[]);
+      setActions((actionResult.data ?? []) as ActionRow[]);
+      setRiskRows((riskResult.data ?? []) as RiskRow[]);
+    };
+
+    void loadSupportingData();
+    return () => {
+      isMounted = false;
+    };
+  }, [details?.report?.report_id]);
+
+  const uploadCommentAttachment = async (reportId: number, file: File) => {
+    const filePath = `comments/${reportId}/${Date.now()}_${file.name}`;
+    const { error: uploadError } = await supabase.storage
+      .from("report-attachments")
+      .upload(filePath, file);
+    if (uploadError) throw new Error(uploadError.message);
+    return filePath;
+  };
+
+  const submitComment = async () => {
+    if (!details?.report) return;
+    if (!commentText.trim()) {
+      setError("Comment text is required.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const reportId = details.report.report_id;
+      let attachmentPath: string | null = null;
+      if (commentFile) {
+        attachmentPath = await uploadCommentAttachment(reportId, commentFile);
+      }
+      let insertError;
+      if (attachmentPath) {
+        const { data, error } = await supabase
+          .from("report_comments")
+          .insert({
+            report_id: reportId,
+            comment_text: commentText.trim(),
+            attachment_path: attachmentPath,
+          })
+          .select("comment_id,report_id,comment_text,attachment_path,created_at")
+          .single();
+        insertError = error;
+        if (!error && data) {
+          setComments((prev) => [data as CommentRow, ...prev]);
+        }
+      }
+      if (!attachmentPath || insertError) {
+        const { data, error } = await supabase
+          .from("report_comments")
+          .insert({
+            report_id: reportId,
+            comment_text: commentText.trim(),
+          })
+          .select("comment_id,report_id,comment_text,created_at")
+          .single();
+        if (error || !data) {
+          throw new Error(error?.message ?? "Unable to post comment.");
+        }
+        setComments((prev) => [data as CommentRow, ...prev]);
+      }
+      setCommentText("");
+      setCommentFile(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to post comment.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const submitNote = async () => {
+    if (!details?.report) return;
+    if (!notesText.trim()) {
+      setError("Note text is required.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const reportId = details.report.report_id;
+      const noteText = `[Note] ${notesText.trim()}`;
+      const { data, error: insertError } = await supabase
+        .from("report_comments")
+        .insert({ report_id: reportId, comment_text: noteText })
+        .select("comment_id,report_id,comment_text,created_at")
+        .single();
+      if (insertError || !data) {
+        throw new Error(insertError?.message ?? "Unable to save note.");
+      }
+      setComments((prev) => [data as CommentRow, ...prev]);
+      setNotesText("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save note.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const filteredActions = useMemo(() => {
+    if (!actionFilter) return actions;
+    return actions.filter((action) => action.status === actionFilter);
+  }, [actions, actionFilter]);
+
+  const createIssue = async () => {
+    if (!details?.report) return;
+    if (!issueForm.categoryId) {
+      setError("Select a risk category.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const categoryId = Number(issueForm.categoryId);
+      const subCategoryId = issueForm.subCategoryId ? Number(issueForm.subCategoryId) : null;
+      const { error: insertError } = await supabase.from("report_risk_categories").insert({
+        report_id: details.report.report_id,
+        category_id: categoryId,
+        sub_category_id: subCategoryId,
+      });
+      if (insertError) throw new Error(insertError.message);
+
+      const category = riskCategories.find((item) => item.category_id === categoryId);
+      const subCategory = riskSubCategories.find((item) => item.sub_category_id === subCategoryId);
+      setRiskRows((prev) => [
+        {
+          category_id: categoryId,
+          sub_category_id: subCategoryId,
+          report_categories: category ? { name: category.name } : null,
+          report_sub_categories: subCategory ? { name: subCategory.name } : null,
+        },
+        ...prev,
+      ]);
+      setIssueForm({ categoryId: "", subCategoryId: "" });
+      setShowIssueForm(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to add issue.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const statusStyle = (status: string) => {
     switch (status) {
@@ -334,69 +665,45 @@ export default function ReportsPage() {
         <div className="mt-6">
           {filteredReports.length ? (
             <div className="overflow-x-auto rounded-2xl border border-slate-200">
-              <table className="w-full min-w-[880px] text-left text-xs text-slate-600">
+              <table className="w-full min-w-[980px] text-left text-xs text-slate-600">
                 <thead className="bg-slate-50 text-[11px] uppercase tracking-[0.2em] text-slate-400">
                   <tr>
+                    <th className="px-4 py-3">No</th>
                     <th className="px-4 py-3">Code</th>
                     <th className="px-4 py-3">Subject</th>
                     <th className="px-4 py-3">Description</th>
-                  <th className="px-4 py-3">Location</th>
-                  <th className="px-4 py-3">Created</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">View</th>
+                    <th className="px-4 py-3">Creation Date</th>
+                    <th className="px-4 py-3">Source</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Translation</th>
+                    <th className="px-4 py-3">Option</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredReports.map((row) => (
+                {filteredReports.map((row, index) => (
                   <tr key={row.report_id} className="border-t border-slate-100">
-                      <td className="px-4 py-3 font-semibold text-slate-800">{row.report_code}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <span>{row.title}</span>
-                          <button
-                            type="button"
-                            className="rounded-full border border-slate-200 px-2 py-1 text-[11px]"
-                            onClick={() => openDetails(row.report_id)}
-                            disabled={loadingDetails}
-                          >
-                            View
-                          </button>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">{row.description}</td>
-                      <td className="px-4 py-3">{row.incident_location || "-"}</td>
-                      <td className="px-4 py-3">
-                        {row.created_at ? new Date(row.created_at).toLocaleDateString() : "-"}
-                      </td>
+                    <td className="px-4 py-3">{index + 1}</td>
+                    <td className="px-4 py-3 font-semibold text-slate-800">{row.report_code}</td>
+                    <td className="px-4 py-3">{truncateText(row.title, 60)}</td>
+                    <td className="px-4 py-3">{truncateText(row.description, 90)}</td>
                     <td className="px-4 py-3">
-                      <select
+                      {row.created_at ? new Date(row.created_at).toLocaleDateString() : "-"}
+                    </td>
+                    <td className="px-4 py-3">{row.reporter_email ?? "Anonymous"}</td>
+                    <td className="px-4 py-3">{row.status ?? "-"}</td>
+                    <td className="px-4 py-3">{row.original_language ?? "-"}</td>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
                         className="rounded-full border border-slate-200 px-2 py-1 text-[11px]"
-                        value={row.status || ""}
-                        disabled={saving}
-                        onChange={(event) =>
-                          updateReport(row.report_id, { status: event.target.value || null })
-                        }
+                        onClick={() => openDetails(row.report_id)}
+                        disabled={loadingDetails}
                       >
-                          <option value="">-</option>
-                          {statusOptions.map((status) => (
-                            <option key={status} value={status}>
-                              {status}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-4 py-3">
-                        <button
-                          type="button"
-                          className="rounded-full border border-slate-200 px-2 py-1 text-[11px]"
-                          onClick={() => openDetails(row.report_id)}
-                          disabled={loadingDetails}
-                        >
-                          View
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                        View
+                      </button>
+                    </td>
+                  </tr>
+                ))}
                 </tbody>
               </table>
             </div>
@@ -478,11 +785,27 @@ export default function ReportsPage() {
           (() => {
             const reporterVisible =
               !details.report.is_anonymous && details.report.share_contact_with_company;
+            const intake = (details.report.intake_payload ?? {}) as Record<string, unknown>;
+            const commentUpdates = comments.filter(
+              (comment) => !comment.comment_text.startsWith("[Note]")
+            );
+            const notes = comments.filter((comment) => comment.comment_text.startsWith("[Note]"));
+
+            const copyLink = () => {
+              const code = details.report.report_code ?? "";
+              if (!code) return;
+              const url = `${window.location.origin}/portal/org/reports?report=${code}`;
+              void navigator.clipboard.writeText(url);
+            };
 
             return (
               <div className="space-y-6">
                 <div className="grid gap-3 lg:grid-cols-3">
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <p className="text-xs text-slate-400">Report Source</p>
+                    <p className="mt-2 text-sm font-semibold text-slate-900">
+                      {(intake.incident_company_name as string) ?? "WhiteBox"}
+                    </p>
                     <p className="text-xs text-slate-400">Report ID</p>
                     <p className="mt-2 text-sm font-semibold text-slate-900">
                       {details.report.report_code ?? "-"}
@@ -505,14 +828,39 @@ export default function ReportsPage() {
                     </p>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <p className="text-xs text-slate-400">Reporter Contact</p>
-                    <p className="mt-2 text-sm font-semibold text-slate-900">
-                      {reporterVisible ? details.report.reporter_email ?? "-" : "Hidden"}
-                    </p>
-                    <p className="mt-3 text-xs text-slate-400">Sharing Enabled</p>
-                    <p className="text-sm font-semibold text-slate-900">
-                      {details.report.share_contact_with_company ? "Yes" : "No"}
-                    </p>
+                    <p className="text-xs text-slate-400">Share with others</p>
+                    <label className="mt-2 flex items-center gap-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(details.report.share_contact_with_company)}
+                        onChange={(event) =>
+                          updateReport(Number(details.report.report_id), {
+                            share_contact_with_company: event.target.checked,
+                          })
+                        }
+                      />
+                      Share reporter contact
+                    </label>
+                    <button
+                      type="button"
+                      className="mt-4 w-full rounded-full bg-[var(--wb-cobalt)] px-4 py-2 text-xs font-semibold text-white"
+                      onClick={copyLink}
+                    >
+                      Copy Report Link
+                    </button>
+                    <p className="mt-4 text-xs text-slate-400">Translate to</p>
+                    <select
+                      className="mt-2 w-full rounded-full border border-slate-200 px-3 py-2 text-xs"
+                      value={translationTarget}
+                      onChange={(event) => setTranslationTarget(event.target.value)}
+                    >
+                      <option value="">Choose Language</option>
+                      {languages.map((lang) => (
+                        <option key={lang.language_id} value={lang.language_code}>
+                          {lang.language_name}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
@@ -526,6 +874,21 @@ export default function ReportsPage() {
                       <div className="mt-4">
                         {renderStatusStepper(details.report.status, details.report.report_id)}
                       </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <p className="text-xs text-slate-400">AI Filtration Result</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">N/A</p>
+                      <p className="mt-2 text-xs text-slate-500">Reasoning: -</p>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <p className="text-xs text-slate-400">Last Modified</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">
+                        {details.report.created_at
+                          ? new Date(details.report.created_at).toLocaleDateString()
+                          : "-"}
+                      </p>
                     </div>
 
                     <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -563,35 +926,70 @@ export default function ReportsPage() {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                    <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
-                      {["details", "actions", "activity"].map((tab) => (
-                        <button
-                          key={tab}
-                          className={`rounded-full px-3 py-1 ${
-                            detailsTab === tab
-                              ? "bg-[var(--wb-cobalt)] text-white"
-                              : "border border-slate-200"
-                          }`}
-                          onClick={() => setDetailsTab(tab as typeof detailsTab)}
-                        >
-                          {tab === "details" ? "Details" : tab === "actions" ? "Actions" : "Activity Log"}
-                        </button>
-                      ))}
-                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
+                        {[
+                          { key: "details", label: "Details" },
+                          { key: "issue", label: "Issue" },
+                          { key: "actions", label: "Actions" },
+                          { key: "services", label: "Services" },
+                          { key: "activity", label: "Activity Log" },
+                        ].map((tab) => (
+                          <button
+                            key={tab.key}
+                            className={`rounded-full px-3 py-1 ${
+                              primaryTab === tab.key
+                                ? "bg-[var(--wb-cobalt)] text-white"
+                                : "border border-slate-200"
+                            }`}
+                            onClick={() =>
+                              setPrimaryTab(
+                                tab.key as "details" | "issue" | "actions" | "services" | "activity"
+                              )
+                            }
+                          >
+                            {tab.label}
+                          </button>
+                        ))}
+                      </div>
 
-                    {detailsTab === "details" ? (
+                    {primaryTab === "details" ? (
                       <div className="mt-4 space-y-4 text-sm text-slate-600">
+                        <div className="flex flex-wrap gap-2 text-xs font-semibold text-slate-500">
+                          {detailSections.map((tab) => (
+                            <button
+                              key={tab.key}
+                              className={`rounded-full px-3 py-1 ${
+                                detailTab === tab.key
+                                  ? "bg-slate-100 text-slate-900"
+                                  : "border border-slate-200"
+                              }`}
+                              onClick={() =>
+                                setDetailTab(
+                                  tab.key as "incident" | "reporter" | "location" | "risks" | "supply"
+                                )
+                              }
+                            >
+                              {tab.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        {detailTab === "incident" ? (
                         <div>
                           <p className="text-xs text-slate-400">Report subject</p>
                           <p className="mt-1 font-semibold text-slate-900">
                             {details.report.title ?? "-"}
                           </p>
                         </div>
+                        ) : null}
+                        {detailTab === "incident" ? (
                         <div>
                           <p className="text-xs text-slate-400">Description</p>
                           <p className="mt-1">{details.report.description ?? "-"}</p>
                         </div>
+                        ) : null}
+                        {detailTab === "incident" ? (
                         <div className="grid gap-3 sm:grid-cols-2 text-xs text-slate-600">
                           <div>
                             <p className="text-[11px] uppercase text-slate-400">Incident date</p>
@@ -616,54 +1014,409 @@ export default function ReportsPage() {
                             </p>
                           </div>
                         </div>
-                        {details.report.legal_steps_taken ? (
+                        ) : null}
+                        {detailTab === "incident" && details.report.legal_steps_taken ? (
                           <div>
                             <p className="text-xs text-slate-400">Legal steps taken</p>
                             <p className="mt-1">{details.report.legal_steps_taken}</p>
                           </div>
                         ) : null}
-                        {details.report.suggested_remedy ? (
+                        {detailTab === "incident" && details.report.suggested_remedy ? (
                           <div>
                             <p className="text-xs text-slate-400">Suggested remedy</p>
                             <p className="mt-1">{details.report.suggested_remedy}</p>
                           </div>
                         ) : null}
-                        <div>
-                          <p className="text-xs text-slate-400">Files</p>
-                          {attachmentLinks.length ? (
-                            <ul className="mt-2 space-y-2 text-xs">
-                              {attachmentLinks.map((file) => (
-                                <li key={file.path} className="flex items-center justify-between">
-                                  <span className="truncate">{file.path.split("/").pop()}</span>
-                                  <a
-                                    className="text-[var(--wb-cobalt)]"
-                                    href={file.url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    View
-                                  </a>
-                                </li>
+                        {detailTab === "incident" ? (
+                          <div>
+                            <p className="text-xs text-slate-400">Files</p>
+                            {attachmentLinks.length ? (
+                              <ul className="mt-2 space-y-2 text-xs">
+                                {attachmentLinks.map((file) => (
+                                  <li key={file.path} className="flex items-center justify-between">
+                                    <span className="truncate">{file.path.split("/").pop()}</span>
+                                    <a
+                                      className="text-[var(--wb-cobalt)]"
+                                      href={file.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      View
+                                    </a>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p className="mt-1 text-xs text-slate-400">No files attached.</p>
+                            )}
+                          </div>
+                        ) : null}
+
+                        {detailTab === "reporter" ? (
+                          <div className="space-y-3 text-xs text-slate-600">
+                            <div>
+                              <p className="text-xs text-slate-400">Email</p>
+                              <p className="mt-1 font-semibold text-slate-900">
+                                {reporterVisible ? details.report.reporter_email ?? "-" : "Hidden"}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-400">Country of residence</p>
+                              <p className="mt-1 font-semibold text-slate-900">
+                                {(intake.reporter_country as string) ?? "-"}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-400">Representative</p>
+                              <p className="mt-1 font-semibold text-slate-900">
+                                {intake.representative ? "Yes" : "No"}
+                              </p>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {detailTab === "location" ? (
+                          <div className="space-y-2 text-xs text-slate-600">
+                            <p className="text-xs text-slate-400">Reported company</p>
+                            <p className="font-semibold text-slate-900">
+                              {(intake.incident_company_name as string) ?? "-"}
+                            </p>
+                            <p className="text-xs text-slate-400">Worksite</p>
+                            <p className="font-semibold text-slate-900">
+                              {(intake.worksite_name as string) ?? details.report.incident_location ?? "-"}
+                            </p>
+                            <p className="text-xs text-slate-400">Country</p>
+                            <p className="font-semibold text-slate-900">{details.report.country ?? "-"}</p>
+                          </div>
+                        ) : null}
+
+                        {detailTab === "risks" ? (
+                          <div className="space-y-3 text-xs text-slate-600">
+                            {riskRows.length ? (
+                              riskRows.map((risk) => (
+                                <div key={`${risk.category_id}-${risk.sub_category_id ?? 0}`}>
+                                  <p className="text-xs text-slate-400">Category</p>
+                                  <p className="font-semibold text-slate-900">
+                                    {risk.report_categories?.name ?? "Uncategorized"}
+                                  </p>
+                                  <p className="text-xs text-slate-400">Subcategory</p>
+                                  <p className="font-semibold text-slate-900">
+                                    {risk.report_sub_categories?.name ?? "-"}
+                                  </p>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-xs text-slate-400">No risk categories linked yet.</p>
+                            )}
+                          </div>
+                        ) : null}
+
+                        {detailTab === "supply" ? (
+                          <div className="space-y-3 text-xs text-slate-600">
+                            <div>
+                              <p className="text-xs text-slate-400">Direct suppliers</p>
+                              <p className="font-semibold text-slate-900">
+                                {details.report.alert_direct_suppliers ? "Included" : "Not Included"}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-400">Indirect suppliers</p>
+                              <p className="font-semibold text-slate-900">
+                                {details.report.alert_indirect_suppliers ? "Included" : "Not Included"}
+                              </p>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {primaryTab === "issue" ? (
+                      <div className="mt-4 space-y-3 text-xs text-slate-600">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold text-slate-700">Report Issues</p>
+                          <button
+                            type="button"
+                            className="rounded-full border border-slate-200 px-3 py-1 text-[11px] font-semibold text-slate-600"
+                            onClick={() => setShowIssueForm((prev) => !prev)}
+                          >
+                            {showIssueForm ? "Close" : "Create"}
+                          </button>
+                        </div>
+                        {showIssueForm ? (
+                          <div className="space-y-2 rounded-xl border border-dashed border-slate-200 p-3">
+                            <select
+                              className="w-full rounded-full border border-slate-200 px-3 py-2 text-[11px]"
+                              value={issueForm.categoryId}
+                              onChange={(event) =>
+                                setIssueForm((prev) => ({
+                                  ...prev,
+                                  categoryId: event.target.value,
+                                  subCategoryId: "",
+                                }))
+                              }
+                            >
+                              <option value="">Select Category</option>
+                              {riskCategories.map((category) => (
+                                <option key={category.category_id} value={category.category_id}>
+                                  {category.name}
+                                </option>
                               ))}
-                            </ul>
-                          ) : (
-                            <p className="mt-1 text-xs text-slate-400">No files attached.</p>
-                          )}
+                            </select>
+                            <select
+                              className="w-full rounded-full border border-slate-200 px-3 py-2 text-[11px]"
+                              value={issueForm.subCategoryId}
+                              onChange={(event) =>
+                                setIssueForm((prev) => ({
+                                  ...prev,
+                                  subCategoryId: event.target.value,
+                                }))
+                              }
+                              disabled={!issueForm.categoryId}
+                            >
+                              <option value="">Select Subcategory</option>
+                              {riskSubCategories
+                                .filter(
+                                  (sub) => String(sub.category_id) === issueForm.categoryId
+                                )
+                                .map((sub) => (
+                                  <option key={sub.sub_category_id} value={sub.sub_category_id}>
+                                    {sub.name}
+                                  </option>
+                                ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="w-full rounded-full bg-[var(--wb-cobalt)] px-4 py-2 text-[11px] font-semibold text-white"
+                              onClick={createIssue}
+                              disabled={saving}
+                            >
+                              Add Issue
+                            </button>
+                          </div>
+                        ) : null}
+                        {riskRows.length ? (
+                          <div className="overflow-hidden rounded-xl border border-slate-100">
+                            <table className="w-full text-left text-[11px] text-slate-500">
+                              <thead className="bg-slate-50 uppercase tracking-[0.2em] text-[10px] text-slate-400">
+                                <tr>
+                                  <th className="px-3 py-2">Issue Name</th>
+                                  <th className="px-3 py-2">Category</th>
+                                  <th className="px-3 py-2">Subcategory</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {riskRows.map((risk) => (
+                                  <tr
+                                    key={`${risk.category_id}-${risk.sub_category_id ?? 0}`}
+                                    className="border-t border-slate-100"
+                                  >
+                                    <td className="px-3 py-2">
+                                      {risk.report_sub_categories?.name ??
+                                        risk.report_categories?.name ??
+                                        "Risk Issue"}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {risk.report_categories?.name ?? "Uncategorized"}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {risk.report_sub_categories?.name ?? "-"}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400">No issues linked to this report yet.</p>
+                        )}
+                      </div>
+                    ) : null}
+
+                    {primaryTab === "actions" ? (
+                      <div className="mt-4 space-y-3 text-xs text-slate-600">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold text-slate-700">Actions</p>
+                          <select
+                            className="rounded-full border border-slate-200 px-3 py-1 text-[11px]"
+                            value={actionFilter}
+                            onChange={(event) => setActionFilter(event.target.value)}
+                          >
+                            <option value="">Select Action Status</option>
+                            {actionStatusOptions.map((status) => (
+                              <option key={status} value={status}>
+                                {status}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        {filteredActions.length ? (
+                          <div className="overflow-hidden rounded-xl border border-slate-100">
+                            <table className="w-full text-left text-[11px] text-slate-500">
+                              <thead className="bg-slate-50 uppercase tracking-[0.2em] text-[10px] text-slate-400">
+                                <tr>
+                                  <th className="px-3 py-2">Description</th>
+                                  <th className="px-3 py-2">Suggested By</th>
+                                  <th className="px-3 py-2">Status</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {filteredActions.map((action) => (
+                                  <tr key={action.action_id} className="border-t border-slate-100">
+                                    <td className="px-3 py-2">{action.action_description}</td>
+                                    <td className="px-3 py-2">reporter</td>
+                                    <td className="px-3 py-2">
+                                      <span className="rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700">
+                                        {action.status ?? "planned"}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400">No actions tracked yet.</p>
+                        )}
+                      </div>
+                    ) : null}
+
+                    {primaryTab === "services" ? (
+                      <div className="mt-6 text-center text-xs text-slate-500">Coming Soon</div>
+                    ) : null}
+
+                    {primaryTab === "activity" ? (
+                      <div className="mt-4 space-y-2 text-xs text-slate-600">
+                        <div className="overflow-hidden rounded-xl border border-slate-100">
+                          <table className="w-full text-left text-[11px] text-slate-500">
+                            <thead className="bg-slate-50 uppercase tracking-[0.2em] text-[10px] text-slate-400">
+                              <tr>
+                                <th className="px-3 py-2">Status</th>
+                                <th className="px-3 py-2">Date & Time</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {commentUpdates.length ? (
+                                commentUpdates.map((comment) => (
+                                  <tr key={comment.comment_id} className="border-t border-slate-100">
+                                    <td className="px-3 py-2">Comment added</td>
+                                    <td className="px-3 py-2">
+                                      {comment.created_at
+                                        ? new Date(comment.created_at).toLocaleString()
+                                        : "-"}
+                                    </td>
+                                  </tr>
+                                ))
+                              ) : (
+                                <tr className="border-t border-slate-100">
+                                  <td className="px-3 py-3 text-slate-400" colSpan={2}>
+                                    No activity yet.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
                         </div>
                       </div>
                     ) : null}
+                  </div>
+                </div>
 
-                    {detailsTab === "actions" ? (
-                      <div className="mt-4 text-xs text-slate-500">
-                        Track actions and remediation steps in the Actions module.
-                      </div>
-                    ) : null}
+                <div className="grid gap-6 lg:grid-cols-[1.4fr_0.6fr]">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <p className="text-xs font-semibold text-slate-700">Comments & Updates</p>
+                    <p className="mt-2 text-[11px] text-slate-400">Message 0/500</p>
+                    <textarea
+                      className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-xs"
+                      rows={3}
+                      value={commentText}
+                      onChange={(event) => setCommentText(event.target.value)}
+                      placeholder="Please write your comment..."
+                    />
+                    <p className="mt-2 text-[11px] text-slate-400">Attachment (optional)</p>
+                    <input
+                      type="file"
+                      className="mt-2 w-full text-[11px] text-slate-500"
+                      onChange={(event) => setCommentFile(event.target.files?.[0] ?? null)}
+                    />
+                    <button
+                      type="button"
+                      className="mt-3 w-full rounded-full bg-[var(--wb-cobalt)] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                      onClick={submitComment}
+                      disabled={saving}
+                    >
+                      Post Comment
+                    </button>
+                    <div className="mt-4 space-y-3">
+                      {commentUpdates.length ? (
+                        commentUpdates.map((comment) => (
+                          <div
+                            key={comment.comment_id}
+                            className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600"
+                          >
+                            <p>{comment.comment_text}</p>
+                            <p className="mt-1 text-[10px] text-slate-400">
+                              {comment.created_at ? new Date(comment.created_at).toLocaleString() : "-"}
+                            </p>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-xs text-slate-400">No comments yet.</p>
+                      )}
+                    </div>
+                  </div>
 
-                    {detailsTab === "activity" ? (
-                      <div className="mt-4 text-xs text-slate-500">
-                        Activity log will appear here as workflow events are tracked.
-                      </div>
-                    ) : null}
+                  <div className="space-y-4">
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <p className="text-xs font-semibold text-slate-700">Reporter Feedbacks</p>
+                      {feedbacks.length ? (
+                        <div className="mt-3 space-y-2 text-xs text-slate-600">
+                          {feedbacks.map((feedback) => (
+                            <div key={feedback.id} className="rounded-xl border border-slate-100 px-3 py-2">
+                              <p className="text-[11px] text-slate-400">Rating</p>
+                              <p className="font-semibold text-slate-900">
+                                {feedback.rate ?? "-"} / 5
+                              </p>
+                              <p className="text-[11px] text-slate-400">
+                                {feedback.recommed_us ? "Recommends" : "Not sure"}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-slate-400">No feedbacks yet.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <p className="text-xs font-semibold text-slate-700">Notes</p>
+                  <textarea
+                    className="mt-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-xs"
+                    rows={3}
+                    value={notesText}
+                    onChange={(event) => setNotesText(event.target.value)}
+                    placeholder="Add a private note"
+                  />
+                  <p className="mt-2 text-[11px] text-slate-400">0 / 500</p>
+                  <div className="mt-3 flex items-center justify-between">
+                    <div className="space-y-2 text-xs text-slate-500">
+                      {notes.length ? (
+                        notes.map((note) => (
+                          <p key={note.comment_id}>{note.comment_text.replace("[Note] ", "")}</p>
+                        ))
+                      ) : (
+                        <span>No notes yet.</span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-full border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600"
+                      onClick={submitNote}
+                      disabled={saving}
+                    >
+                      Take Note
+                    </button>
                   </div>
                 </div>
               </div>
