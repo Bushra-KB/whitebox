@@ -463,6 +463,8 @@ export default function ReportNewPage() {
         supabase
           .from("organisations")
           .select("organization_id,name,country,city,website,organization_type")
+          .eq("approval_status", "approved")
+          .eq("account_status", "active")
           .order("name"),
         supabase.from("report_categories").select("category_id,name").order("name"),
         supabase.from("report_sub_categories").select("sub_category_id,name,category_id").order("name"),

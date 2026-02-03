@@ -8,6 +8,14 @@ import SectionCard from "@/components/portal/SectionCard";
 import { supabase } from "@/lib/supabase/client";
 
 const tabs = ["Created", "Filter", "Active", "Spam", "Archived"] as const;
+const statusOptions = [
+  "pre_evaluation",
+  "waiting_admitted",
+  "open_in_progress",
+  "investigation",
+  "remediation",
+  "archived",
+] as const;
 
 type ReportRow = {
   report_id: number;
@@ -18,9 +26,17 @@ type ReportRow = {
   status_id?: number | null;
   status_code?: string | null;
   status_label?: string | null;
+  current_filter_result_id?: number | null;
+  filter_result_code?: string | null;
+  filter_result_label?: string | null;
   report_statuses?: { code: string; label: string } | null;
+  report_filter_results?: { code: string; label: string } | null;
   is_spam: boolean | null;
   created_at: string | null;
+  assigned_department_id?: number | null;
+  triage_workflow_id?: number | null;
+  organization_departments?: { name: string } | null;
+  triage_workflows?: { name: string } | null;
 };
 
 type ReportDetails = {
@@ -37,7 +53,40 @@ type ReportDetails = {
     original_language?: string | null;
     is_incident_is_continuing?: boolean | null;
     intake_payload?: Record<string, unknown> | null;
+    assigned_department_id?: number | null;
+    triage_workflow_id?: number | null;
+    organization_departments?: { name: string } | null;
+    triage_workflows?: { name: string } | null;
   };
+};
+
+type StatusHistoryRow = {
+  id: number;
+  report_id: number;
+  status_id: number;
+  comment_text?: string | null;
+  changed_at?: string | null;
+  report_statuses?: { code: string; label: string } | null;
+};
+
+type CommentRow = {
+  comment_id: number;
+  report_id: number;
+  comment_text: string;
+  created_at: string | null;
+};
+
+type ActionRow = {
+  action_id: number;
+  report_id: number;
+  action_description: string;
+  status: string | null;
+  status_id?: number | null;
+  status_code?: string | null;
+  status_label?: string | null;
+  due_date: string | null;
+  created_at: string | null;
+  report_action_statuses?: { code: string; label: string } | null;
 };
 
 export default function ReporterReportsPage() {
@@ -47,10 +96,13 @@ export default function ReporterReportsPage() {
   const [viewOpen, setViewOpen] = useState(false);
   const [details, setDetails] = useState<ReportDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
-  const [detailsTab, setDetailsTab] = useState<"details" | "activity">("details");
+  const [detailsTab, setDetailsTab] = useState<"details" | "actions" | "activity">("details");
   const [attachmentLinks, setAttachmentLinks] = useState<
     { path: string; url: string }[]
   >([]);
+  const [statusHistory, setStatusHistory] = useState<StatusHistoryRow[]>([]);
+  const [comments, setComments] = useState<CommentRow[]>([]);
+  const [actions, setActions] = useState<ActionRow[]>([]);
 
   useEffect(() => {
     let isMounted = true;
@@ -76,7 +128,7 @@ export default function ReporterReportsPage() {
       const { data: reportRows, error: reportError } = await supabase
         .from("reports")
         .select(
-          "report_id,report_code,title,description,status,status_id,is_spam,created_at,report_statuses(code,label)"
+          "report_id,report_code,title,description,status,status_id,current_filter_result_id,is_spam,created_at,report_statuses(code,label),report_filter_results(code,label)"
         )
         .eq("reporter_user_id", profile.user_id)
         .order("created_at", { ascending: false });
@@ -91,6 +143,8 @@ export default function ReporterReportsPage() {
           ...row,
           status_code: row.report_statuses?.code ?? row.status ?? null,
           status_label: row.report_statuses?.label ?? row.status ?? null,
+          filter_result_code: row.report_filter_results?.code ?? null,
+          filter_result_label: row.report_filter_results?.label ?? null,
         })) ?? [];
       setRows(mapped);
     };
@@ -131,7 +185,7 @@ export default function ReporterReportsPage() {
       const { data: reportRow, error: reportError } = await supabase
         .from("reports")
         .select(
-          "report_id,report_code,title,description,status,status_id,is_spam,created_at,incident_date,incident_location,country,severity_level,suggested_remedy,legal_steps_taken,original_language,is_incident_is_continuing,intake_payload,report_statuses(code,label)"
+          "report_id,report_code,title,description,status,status_id,current_filter_result_id,is_spam,created_at,incident_date,incident_location,country,severity_level,suggested_remedy,legal_steps_taken,original_language,is_incident_is_continuing,intake_payload,assigned_department_id,triage_workflow_id,report_statuses(code,label),report_filter_results(code,label),organization_departments(name),triage_workflows(name)"
         )
         .eq("report_id", reportId)
         .maybeSingle();
@@ -141,6 +195,8 @@ export default function ReporterReportsPage() {
         ...reportRow,
         status_code: reportRow.report_statuses?.code ?? reportRow.status ?? null,
         status_label: reportRow.report_statuses?.label ?? reportRow.status ?? null,
+        filter_result_code: reportRow.report_filter_results?.code ?? null,
+        filter_result_label: reportRow.report_filter_results?.label ?? null,
       };
       setDetails({ report: mapped as ReportDetails["report"] });
       setDetailsTab("details");
@@ -188,6 +244,53 @@ export default function ReporterReportsPage() {
       isMounted = false;
     };
   }, [details]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadActivity = async () => {
+      if (!details?.report?.report_id) {
+        setStatusHistory([]);
+        setComments([]);
+        setActions([]);
+        return;
+      }
+      const [{ data: historyData }, { data: commentData }, { data: actionData }] = await Promise.all([
+        supabase
+          .from("report_status_history")
+          .select("id,report_id,status_id,comment_text,changed_at,report_statuses(code,label)")
+          .eq("report_id", details.report.report_id)
+          .order("changed_at", { ascending: false }),
+        supabase
+          .from("report_comments")
+          .select("comment_id,report_id,comment_text,created_at")
+          .eq("report_id", details.report.report_id)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("report_actions")
+          .select(
+            "action_id,report_id,action_description,status,status_id,due_date,created_at,report_action_statuses(code,label)"
+          )
+          .eq("report_id", details.report.report_id)
+          .order("created_at", { ascending: false }),
+      ]);
+
+      if (!isMounted) return;
+      setStatusHistory((historyData ?? []) as StatusHistoryRow[]);
+      setComments((commentData ?? []) as CommentRow[]);
+      const mappedActions =
+        (actionData ?? []).map((action) => ({
+          ...action,
+          status_code: action.report_action_statuses?.code ?? action.status ?? null,
+          status_label: action.report_action_statuses?.label ?? action.status ?? null,
+        })) ?? [];
+      setActions(mappedActions as ActionRow[]);
+    };
+
+    void loadActivity();
+    return () => {
+      isMounted = false;
+    };
+  }, [details?.report?.report_id]);
 
   return (
     <SectionCard
@@ -317,6 +420,18 @@ export default function ReporterReportsPage() {
                         details.report.status ??
                         "-"}
                     </p>
+                    <p className="mt-3 text-xs text-slate-400">Filter result</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {details.report.filter_result_label ?? "N/A"}
+                    </p>
+                    <p className="mt-3 text-xs text-slate-400">Assigned Department</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {details.report.organization_departments?.name ?? "-"}
+                    </p>
+                    <p className="mt-3 text-xs text-slate-400">Triage Workflow</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {details.report.triage_workflows?.name ?? "-"}
+                    </p>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
                     <p className="text-xs text-slate-400">Creation Date</p>
@@ -344,7 +459,7 @@ export default function ReporterReportsPage() {
 
                 <div className="rounded-2xl border border-slate-200 bg-white p-4">
                   <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
-                    {["details", "activity"].map((tab) => (
+                    {["details", "actions", "activity"].map((tab) => (
                       <button
                         key={tab}
                         className={`rounded-full px-3 py-1 ${
@@ -354,7 +469,7 @@ export default function ReporterReportsPage() {
                         }`}
                         onClick={() => setDetailsTab(tab as typeof detailsTab)}
                       >
-                        {tab === "details" ? "Details" : "Activity Log"}
+                        {tab === "details" ? "Details" : tab === "actions" ? "Actions" : "Activity Log"}
                       </button>
                     ))}
                   </div>
@@ -421,12 +536,111 @@ export default function ReporterReportsPage() {
                           <p className="mt-1 text-xs text-slate-400">No files attached.</p>
                         )}
                       </div>
+                      <div>
+                        <p className="text-xs text-slate-400">Report progression</p>
+                        <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                          {statusOptions.map((status) => {
+                            const current = details.report.status_code ?? details.report.status ?? null;
+                            const isActive = current === status;
+                            return (
+                              <div
+                                key={status}
+                                className={`rounded-full border px-2 py-1 ${
+                                  isActive
+                                    ? "border-[var(--wb-cobalt)] bg-[var(--wb-cobalt)]/10 text-[var(--wb-cobalt)]"
+                                    : "border-slate-200 text-slate-500"
+                                }`}
+                              >
+                                {status.replace(/_/g, " ")}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {detailsTab === "actions" ? (
+                    <div className="mt-4 space-y-3 text-sm text-slate-600">
+                      {actions.length ? (
+                        <div className="overflow-x-auto rounded-xl border border-slate-200">
+                          <table className="w-full min-w-[520px] text-left text-xs">
+                            <thead className="bg-slate-50 text-[11px] uppercase tracking-[0.15em] text-slate-400">
+                              <tr>
+                                <th className="px-3 py-2">Action</th>
+                                <th className="px-3 py-2">Status</th>
+                                <th className="px-3 py-2">Due Date</th>
+                                <th className="px-3 py-2">Created</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {actions.map((action) => (
+                                <tr key={action.action_id} className="border-t border-slate-100">
+                                  <td className="px-3 py-2">{action.action_description || "-"}</td>
+                                  <td className="px-3 py-2">
+                                    {action.status_label ?? action.status_code ?? action.status ?? "-"}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {action.due_date ? new Date(action.due_date).toLocaleDateString() : "-"}
+                                  </td>
+                                  <td className="px-3 py-2">
+                                    {action.created_at ? new Date(action.created_at).toLocaleString() : "-"}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-400">No actions recorded yet.</p>
+                      )}
                     </div>
                   ) : null}
 
                   {detailsTab === "activity" ? (
-                    <div className="mt-4 text-xs text-slate-500">
-                      Status updates will appear here once activity tracking is enabled.
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-600 shadow-sm">
+                      <p className="text-sm font-semibold text-slate-700">Activity Timeline</p>
+                      {(() => {
+                        const statusUpdates = statusHistory.map((entry) => ({
+                          id: `status-${entry.id}`,
+                          created_at: entry.changed_at,
+                          title: entry.report_statuses?.label ?? "Status updated",
+                          comment: entry.comment_text ?? null,
+                        }));
+                        const commentUpdates = comments.map((entry) => ({
+                          id: `comment-${entry.comment_id}`,
+                          created_at: entry.created_at,
+                          title: "Comment added",
+                          comment: entry.comment_text,
+                        }));
+                        const activityItems = [...statusUpdates, ...commentUpdates].sort((a, b) => {
+                          const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+                          const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+                          return bTime - aTime;
+                        });
+                        if (!activityItems.length) {
+                          return <p className="mt-4 text-xs text-slate-400">No activity yet.</p>;
+                        }
+                        return (
+                          <div className="relative mt-4 space-y-4">
+                            <span className="absolute left-2 top-2 h-full w-px bg-slate-200" />
+                            {activityItems.map((item) => (
+                              <div key={item.id} className="relative pl-6">
+                                <span className="absolute left-[0.35rem] top-2 h-2 w-2 rounded-full bg-[var(--wb-cobalt)]" />
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                  <p className="text-[11px] text-slate-500">
+                                    {item.created_at ? new Date(item.created_at).toLocaleString() : "-"}
+                                  </p>
+                                  <p className="mt-1 text-xs font-semibold text-slate-700">{item.title}</p>
+                                  {item.comment ? (
+                                    <p className="mt-1 text-xs text-slate-600">{item.comment}</p>
+                                  ) : null}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </div>
                   ) : null}
                 </div>

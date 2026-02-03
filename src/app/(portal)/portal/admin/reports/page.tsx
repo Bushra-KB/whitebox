@@ -18,9 +18,17 @@ type ReportRow = {
   status_id?: number | null;
   status_code?: string | null;
   status_label?: string | null;
+  current_filter_result_id?: number | null;
+  filter_result_code?: string | null;
+  filter_result_label?: string | null;
+  report_filter_results?: { code: string; label: string } | null;
   is_spam: boolean | null;
   organisation: string;
   reporter: string;
+  assigned_department_id?: number | null;
+  triage_workflow_id?: number | null;
+  organization_departments?: { name: string } | null;
+  triage_workflows?: { name: string } | null;
 };
 
 type ReportDetailRow = {
@@ -48,6 +56,14 @@ type ReportDetailRow = {
   suggested_remedy?: string | null;
   legal_steps_taken?: string | null;
   intake_payload?: Record<string, unknown> | null;
+  current_filter_result_id?: number | null;
+  filter_result_code?: string | null;
+  filter_result_label?: string | null;
+  report_filter_results?: { code: string; label: string } | null;
+  assigned_department_id?: number | null;
+  triage_workflow_id?: number | null;
+  organization_departments?: { name: string } | null;
+  triage_workflows?: { name: string } | null;
 };
 
 type ReportDetails = {
@@ -83,6 +99,26 @@ type StatusHistoryRow = {
   report_statuses?: { code: string; label: string } | null;
 };
 
+type CommentRow = {
+  comment_id: number;
+  report_id: number;
+  comment_text: string;
+  created_at: string | null;
+};
+
+type ActionRow = {
+  action_id: number;
+  report_id: number;
+  action_description: string;
+  status: string | null;
+  status_id?: number | null;
+  status_code?: string | null;
+  status_label?: string | null;
+  due_date: string | null;
+  created_at: string | null;
+  report_action_statuses?: { code: string; label: string } | null;
+};
+
 const statusOptions = [
   "pre_evaluation",
   "waiting_admitted",
@@ -114,13 +150,15 @@ export default function AdminReportsPage() {
     Record<number, Record<number, { requiresComment: boolean; requiresAction: boolean }>>
   >({});
   const [statusHistory, setStatusHistory] = useState<StatusHistoryRow[]>([]);
+  const [comments, setComments] = useState<CommentRow[]>([]);
+  const [actions, setActions] = useState<ActionRow[]>([]);
 
   useEffect(() => {
     let isMounted = true;
     adminInvoke<{ reports: ReportRow[] }>("listReports")
       .then((data) => {
         if (!isMounted) return;
-        setRows(data.reports);
+      setRows(data.reports);
       })
       .catch((err) => {
         if (!isMounted) return;
@@ -227,16 +265,65 @@ export default function AdminReportsPage() {
           .order("changed_at", { ascending: false });
         setStatusHistory((historyRows ?? []) as StatusHistoryRow[]);
       }
+      const refreshed = await adminInvoke<ReportDetails>("getReportDetails", { report_id: reportId });
+      const refreshedReport = refreshed.report;
       setRows((prev) =>
-        prev.map((row) => (row.report_id === reportId ? { ...row, ...updates } : row))
+        prev.map((row) =>
+          row.report_id === reportId
+            ? {
+                ...row,
+                ...refreshedReport,
+                status_code: refreshedReport.status_code ?? refreshedReport.status ?? null,
+                status_label: refreshedReport.status_label ?? refreshedReport.status ?? null,
+                filter_result_code: refreshedReport.filter_result_code ?? null,
+                filter_result_label: refreshedReport.filter_result_label ?? null,
+              }
+            : row
+        )
       );
-      setDetails((prev) =>
-        prev && prev.report.report_id === reportId
-          ? { ...prev, report: { ...prev.report, ...updates } }
-          : prev
-      );
+      setDetails(refreshed);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to update report.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const applyFilterDecision = async (
+    reportId: number,
+    resultCode: "admitted" | "out_of_scope" | "unfounded" | "spam"
+  ) => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      await adminInvoke("setFilterDecision", { report_id: reportId, result_code: resultCode });
+
+      const refreshed = await adminInvoke<ReportDetails>("getReportDetails", { report_id: reportId });
+      const refreshedReport = refreshed.report;
+      setRows((prev) =>
+        prev.map((row) =>
+          row.report_id === reportId
+            ? {
+                ...row,
+                ...refreshedReport,
+                status_code: refreshedReport.status_code ?? refreshedReport.status ?? null,
+                status_label: refreshedReport.status_label ?? refreshedReport.status ?? null,
+                filter_result_code: refreshedReport.filter_result_code ?? null,
+                filter_result_label: refreshedReport.filter_result_label ?? null,
+              }
+            : row
+        )
+      );
+      setDetails(refreshed);
+
+      const { data: historyRows } = await supabase
+        .from("report_status_history")
+        .select("id,report_id,status_id,comment_text,changed_at,report_statuses(code,label)")
+        .eq("report_id", reportId)
+        .order("changed_at", { ascending: false });
+      setStatusHistory((historyRows ?? []) as StatusHistoryRow[]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to apply filter decision.");
     } finally {
       setIsSaving(false);
     }
@@ -299,15 +386,38 @@ export default function AdminReportsPage() {
     const loadStatusHistory = async () => {
       if (!details?.report) {
         setStatusHistory([]);
+        setActions([]);
         return;
       }
-      const { data } = await supabase
-        .from("report_status_history")
-        .select("id,report_id,status_id,comment_text,changed_at,report_statuses(code,label)")
-        .eq("report_id", details.report.report_id)
-        .order("changed_at", { ascending: false });
+      const [{ data: historyData }, { data: commentData }, { data: actionData }] = await Promise.all([
+        supabase
+          .from("report_status_history")
+          .select("id,report_id,status_id,comment_text,changed_at,report_statuses(code,label)")
+          .eq("report_id", details.report.report_id)
+          .order("changed_at", { ascending: false }),
+        supabase
+          .from("report_comments")
+          .select("comment_id,report_id,comment_text,created_at")
+          .eq("report_id", details.report.report_id)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("report_actions")
+          .select(
+            "action_id,report_id,action_description,status,status_id,due_date,created_at,report_action_statuses(code,label)"
+          )
+          .eq("report_id", details.report.report_id)
+          .order("created_at", { ascending: false }),
+      ]);
       if (!isMounted) return;
-      setStatusHistory((data ?? []) as StatusHistoryRow[]);
+      setStatusHistory((historyData ?? []) as StatusHistoryRow[]);
+      setComments((commentData ?? []) as CommentRow[]);
+      const mappedActions =
+        (actionData ?? []).map((action) => ({
+          ...action,
+          status_code: action.report_action_statuses?.code ?? action.status ?? null,
+          status_label: action.report_action_statuses?.label ?? action.status ?? null,
+        })) ?? [];
+      setActions(mappedActions as ActionRow[]);
     };
     void loadStatusHistory();
     return () => {
@@ -542,8 +652,7 @@ export default function AdminReportsPage() {
               const url = `${window.location.origin}/portal/admin/reports?report=${code}`;
               void navigator.clipboard.writeText(url);
             };
-            const activityItems = statusHistory
-              .map((entry) => ({
+            const statusUpdates = statusHistory.map((entry) => ({
                 id: entry.id,
                 created_at: entry.changed_at,
                 title:
@@ -552,7 +661,16 @@ export default function AdminReportsPage() {
                   statusById[entry.status_id]?.code ??
                   "Status updated",
                 comment: entry.comment_text ?? null,
-              }))
+                type: "status",
+              }));
+            const commentUpdates = comments.map((entry) => ({
+              id: `comment-${entry.comment_id}`,
+              created_at: entry.created_at,
+              title: "Comment added",
+              comment: entry.comment_text ?? null,
+              type: "comment",
+            }));
+            const activityItems = [...statusUpdates, ...commentUpdates]
               .sort((a, b) => {
                 const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
                 const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
@@ -577,6 +695,14 @@ export default function AdminReportsPage() {
                         details.report.status_code ??
                         details.report.status ??
                         "-"}
+                    </p>
+                    <p className="mt-3 text-xs text-slate-400">Assigned Department</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {details.report.organization_departments?.name ?? "-"}
+                    </p>
+                    <p className="mt-3 text-xs text-slate-400">Triage Workflow</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {details.report.triage_workflows?.name ?? "-"}
                     </p>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -629,7 +755,12 @@ export default function AdminReportsPage() {
                       </p>
                       <div className="mt-4">
                         {renderStatusStepper(
-                          details.report.status_code ?? details.report.status ?? undefined,
+                          details.report.status_id
+                            ? statusById[details.report.status_id]?.code ??
+                                details.report.status_code ??
+                                details.report.status ??
+                                undefined
+                            : details.report.status_code ?? details.report.status ?? undefined,
                           details.report.status_id ?? null
                         )}
                       </div>
@@ -644,6 +775,55 @@ export default function AdminReportsPage() {
                       >
                         Flag Not Right
                       </button>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <p className="text-xs text-slate-400">AI Filtration Result</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">
+                        {details.report.filter_result_label ?? "N/A"}
+                      </p>
+                      {(details.report.status_code ?? details.report.status) === "pre_evaluation" ? (
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            className="rounded-full border border-emerald-200 px-3 py-1 text-[11px] font-semibold text-emerald-700"
+                            onClick={() =>
+                              applyFilterDecision(Number(details.report.report_id), "admitted")
+                            }
+                          >
+                            Admit
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-full border border-amber-200 px-3 py-1 text-[11px] font-semibold text-amber-700"
+                            onClick={() =>
+                              applyFilterDecision(Number(details.report.report_id), "out_of_scope")
+                            }
+                          >
+                            Out of Scope
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-700"
+                            onClick={() =>
+                              applyFilterDecision(Number(details.report.report_id), "unfounded")
+                            }
+                          >
+                            Unfounded
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-full border border-fuchsia-200 px-3 py-1 text-[11px] font-semibold text-fuchsia-700"
+                            onClick={() =>
+                              applyFilterDecision(Number(details.report.report_id), "spam")
+                            }
+                          >
+                            Spam
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-slate-500">Reasoning: -</p>
+                      )}
                     </div>
 
                     <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -788,26 +968,42 @@ export default function AdminReportsPage() {
 
                     {activeTab === "actions" ? (
                       <div className="mt-4 space-y-3 text-sm text-slate-600">
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs">
-                          Use the actions panel to coordinate escalations and follow-up steps.
-                        </div>
-                        <div className="grid gap-3 sm:grid-cols-2 text-xs text-slate-600">
-                          <div>
-                            <p className="text-[11px] uppercase text-slate-400">Reporter</p>
-                            <p className="font-semibold">
-                              {details.reporter?.display_name ||
-                                [details.reporter?.first_name, details.reporter?.last_name]
-                                  .filter(Boolean)
-                                  .join(" ") ||
-                                details.report.reporter_email ||
-                                "-"}
-                            </p>
+                        {actions.length ? (
+                          <div className="overflow-x-auto rounded-xl border border-slate-200">
+                            <table className="w-full min-w-[520px] text-left text-xs">
+                              <thead className="bg-slate-50 text-[11px] uppercase tracking-[0.15em] text-slate-400">
+                                <tr>
+                                  <th className="px-3 py-2">Action</th>
+                                  <th className="px-3 py-2">Status</th>
+                                  <th className="px-3 py-2">Due Date</th>
+                                  <th className="px-3 py-2">Created</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {actions.map((action) => (
+                                  <tr key={action.action_id} className="border-t border-slate-100">
+                                    <td className="px-3 py-2">{action.action_description || "-"}</td>
+                                    <td className="px-3 py-2">
+                                      {action.status_label ?? action.status_code ?? action.status ?? "-"}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {action.due_date
+                                        ? new Date(action.due_date).toLocaleDateString()
+                                        : "-"}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      {action.created_at
+                                        ? new Date(action.created_at).toLocaleString()
+                                        : "-"}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
                           </div>
-                          <div>
-                            <p className="text-[11px] uppercase text-slate-400">Organisation</p>
-                            <p className="font-semibold">{details.organisation?.name ?? "-"}</p>
-                          </div>
-                        </div>
+                        ) : (
+                          <p className="text-xs text-slate-400">No actions created for this report yet.</p>
+                        )}
                       </div>
                     ) : null}
 

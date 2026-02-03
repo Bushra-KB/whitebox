@@ -544,6 +544,8 @@ export default function OrgSignupPage() {
           company_code: form.referralCode || null,
           contact_info: contactInfo,
           is_claimed: false,
+          approval_status: "pending",
+          account_status: "inactive",
         })
         .select("organization_id,name")
         .single();
@@ -1031,7 +1033,10 @@ export default function OrgSignupPage() {
                 ✓
               </div>
               <h2 className="font-display text-2xl">Thank you</h2>
-              <p className="text-sm text-slate-600">The form was submitted successfully.</p>
+              <p className="text-sm text-slate-600">
+                Signup submitted successfully. Your organisation is now waiting for System Admin
+                approval.
+              </p>
               <Link
                 className="inline-flex rounded-full bg-[var(--wb-navy)] px-5 py-2 text-sm text-white"
                 href="/portal"

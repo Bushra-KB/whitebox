@@ -30,7 +30,6 @@ const emptyForm = {
   white_collar_workers: "",
   blue_collar_workers: "",
   female_workers: "",
-  total_employees: "",
 };
 
 export default function OrganisationWorksitesPage() {
@@ -91,7 +90,6 @@ export default function OrganisationWorksitesPage() {
       white_collar_workers: row.white_collar_workers?.toString() ?? "",
       blue_collar_workers: row.blue_collar_workers?.toString() ?? "",
       female_workers: row.female_workers?.toString() ?? "",
-      total_employees: row.total_employees?.toString() ?? "",
     });
     setOpen(true);
   };
@@ -113,7 +111,6 @@ export default function OrganisationWorksitesPage() {
         white_collar_workers: toIntOrNull(form.white_collar_workers),
         blue_collar_workers: toIntOrNull(form.blue_collar_workers),
         female_workers: toIntOrNull(form.female_workers),
-        total_employees: toIntOrNull(form.total_employees),
       };
 
       if (editing) {
@@ -229,6 +226,7 @@ export default function OrganisationWorksitesPage() {
             title="No worksites yet"
             description="Add worksites to map incidents to specific facilities and teams."
             actionLabel="Add new"
+            onAction={openNew}
           />
         )}
       </SectionCard>
@@ -332,13 +330,19 @@ export default function OrganisationWorksitesPage() {
           <div>
             <label className="text-xs font-semibold text-slate-500">Total employees</label>
             <input
-              className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-              value={form.total_employees}
-              onChange={(event) =>
-                setForm((prev) => ({ ...prev, total_employees: event.target.value }))
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600"
+              value={
+                (() => {
+                  const white = toIntOrNull(form.white_collar_workers) ?? 0;
+                  const blue = toIntOrNull(form.blue_collar_workers) ?? 0;
+                  return String(white + blue);
+                })()
               }
-              inputMode="numeric"
+              readOnly
             />
+            <p className="mt-1 text-[11px] text-slate-400">
+              Auto-calculated from white + blue collar workers.
+            </p>
           </div>
         </div>
       </Modal>

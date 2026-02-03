@@ -2,7 +2,6 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { it } from "node:test";
 
 const ROLE_DESTINATIONS: Record<string, string> = {
   organization_owner: "/portal/org",
@@ -26,11 +25,29 @@ export default async function PortalIndexPage() {
 
   const { data: profile } = await supabase
     .from("user_profiles")
-    .select("user_type")
+    .select("user_type,owned_organization_id")
     .eq("auth_user_id", user.id)
     .maybeSingle();
 
   const userType = (profile?.user_type ?? "").toString().trim().toLowerCase();
+  if (userType === "organization_owner" && profile?.owned_organization_id) {
+    const { data: org } = await supabase
+      .from("organisations")
+      .select("approval_status,is_claimed,account_status")
+      .eq("organization_id", profile.owned_organization_id)
+      .maybeSingle();
+    const approvalStatus = (org?.approval_status ?? (org?.is_claimed ? "approved" : "pending")) as
+      | "approved"
+      | "pending"
+      | "blocked"
+      | "removed";
+    const accountStatus = (org?.account_status ?? (approvalStatus === "approved" ? "active" : "inactive")) as
+      | "active"
+      | "inactive";
+    if (approvalStatus !== "approved" || accountStatus !== "active") {
+      redirect("/portal/org/pending");
+    }
+  }
   const destination = ROLE_DESTINATIONS[userType];
 
   if (destination) {

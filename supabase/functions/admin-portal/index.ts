@@ -46,14 +46,17 @@ async function requireAdmin(authHeader: string) {
   }
   const { data: profile, error: profileError } = await adminClient
     .from("user_profiles")
-    .select("user_type")
+    .select("user_id,user_type")
     .eq("auth_user_id", data.user.id)
     .maybeSingle();
   if (profileError) throw profileError;
   if (!profile || profile.user_type !== "administrator") {
     throw new Error("Forbidden");
   }
-  return data.user;
+  return {
+    authUserId: data.user.id,
+    userId: profile.user_id as string,
+  };
 }
 
 serve(async (req) => {
@@ -189,7 +192,7 @@ serve(async (req) => {
         const { data: orgs, error } = await adminClient
           .from("organisations")
           .select(
-            "organization_id,name,organization_type,country,city,website,is_claimed,created_at",
+            "organization_id,name,organization_type,country,city,website,is_claimed,approval_status,account_status,approved_at,removed_at,blocked_at,created_at",
           )
           .order("created_at", { ascending: false });
         if (error) throw error;
@@ -248,11 +251,138 @@ serve(async (req) => {
         if (error) throw error;
         return jsonResponse(200, { success: true });
       }
+      case "getOrganisationDetails": {
+        const { organization_id } = payload ?? {};
+        if (!organization_id) throw new Error("organization_id is required.");
+        const { data: organisation, error: orgError } = await adminClient
+          .from("organisations")
+          .select(
+            "organization_id,name,organization_type,legal_type,address,city,country,website,company_code,employees_number,contact_info,is_claimed,approval_status,account_status,approved_at,removed_at,blocked_at,removal_reason,created_at",
+          )
+          .eq("organization_id", organization_id)
+          .maybeSingle();
+        if (orgError) throw orgError;
+        if (!organisation) throw new Error("Organisation not found.");
+
+        const [{ data: orgUsers }, { count: reportCount }] = await Promise.all([
+          adminClient
+            .from("organization_users")
+            .select("user_id,role_id,is_active")
+            .eq("organization_id", organization_id),
+          adminClient
+            .from("reports")
+            .select("report_id", { count: "exact", head: true })
+            .eq("reported_org_id", organization_id),
+        ]);
+
+        const userIds = Array.from(new Set((orgUsers ?? []).map((row) => row.user_id)));
+        const roleIds = Array.from(new Set((orgUsers ?? []).map((row) => row.role_id).filter(Boolean))) as number[];
+        const [{ data: users }, { data: roles }] = await Promise.all([
+          userIds.length
+            ? adminClient
+                .from("user_profiles")
+                .select("user_id,display_name,email,is_active")
+                .in("user_id", userIds)
+            : Promise.resolve({ data: [] }),
+          roleIds.length
+            ? adminClient.from("roles").select("role_id,name").in("role_id", roleIds)
+            : Promise.resolve({ data: [] }),
+        ]);
+        const userMap = new Map((users ?? []).map((row) => [row.user_id, row]));
+        const roleMap = new Map((roles ?? []).map((row) => [row.role_id, row.name]));
+
+        return jsonResponse(200, {
+          success: true,
+          data: {
+            organisation,
+            users: (orgUsers ?? []).map((row) => ({
+              user_id: row.user_id,
+              display_name: userMap.get(row.user_id)?.display_name ?? "-",
+              email: userMap.get(row.user_id)?.email ?? "-",
+              role: row.role_id ? roleMap.get(row.role_id) ?? "-" : "-",
+              is_active: row.is_active ?? userMap.get(row.user_id)?.is_active ?? false,
+            })),
+            report_count: reportCount ?? 0,
+          },
+        });
+      }
+      case "approveOrganisation": {
+        const { organization_id } = payload ?? {};
+        if (!organization_id) throw new Error("organization_id is required.");
+        const { error } = await adminClient
+          .from("organisations")
+          .update({
+            approval_status: "approved",
+            account_status: "active",
+            is_claimed: true,
+            approved_at: new Date().toISOString(),
+            approved_by_user: adminUser.userId,
+            blocked_at: null,
+            blocked_by_user: null,
+            removed_at: null,
+            removed_by_user: null,
+            removal_reason: null,
+          })
+          .eq("organization_id", organization_id);
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
+      case "removeOrganisation": {
+        const { organization_id, reason } = payload ?? {};
+        if (!organization_id) throw new Error("organization_id is required.");
+        const { error } = await adminClient
+          .from("organisations")
+          .update({
+            approval_status: "removed",
+            account_status: "inactive",
+            is_claimed: false,
+            removed_at: new Date().toISOString(),
+            removed_by_user: adminUser.userId,
+            removal_reason: typeof reason === "string" ? reason : null,
+          })
+          .eq("organization_id", organization_id);
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
+      case "blockOrganisation": {
+        const { organization_id } = payload ?? {};
+        if (!organization_id) throw new Error("organization_id is required.");
+        const { error } = await adminClient
+          .from("organisations")
+          .update({
+            approval_status: "blocked",
+            account_status: "inactive",
+            is_claimed: false,
+            blocked_at: new Date().toISOString(),
+            blocked_by_user: adminUser.userId,
+          })
+          .eq("organization_id", organization_id);
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
+      case "unblockOrganisation": {
+        const { organization_id } = payload ?? {};
+        if (!organization_id) throw new Error("organization_id is required.");
+        const { error } = await adminClient
+          .from("organisations")
+          .update({
+            approval_status: "approved",
+            account_status: "active",
+            is_claimed: true,
+            approved_at: new Date().toISOString(),
+            approved_by_user: adminUser.userId,
+            blocked_at: null,
+            blocked_by_user: null,
+          })
+          .eq("organization_id", organization_id);
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
       case "listReports": {
         const { data: reports, error } = await adminClient
           .from("reports")
           .select(
-            "report_id,report_code,title,description,spam_score,created_at,incident_location,status,status_id,is_spam,reported_org_id,reporter_user_id,report_statuses(code,label)",
+            "report_id,report_code,title,description,spam_score,created_at,incident_location,status,status_id,is_spam,current_filter_result_id,reported_org_id,reporter_user_id,report_statuses(code,label),report_filter_results(code,label)",
           )
           .order("created_at", { ascending: false });
         if (error) throw error;
@@ -283,6 +413,8 @@ serve(async (req) => {
               ...report,
               status_code: report.report_statuses?.code ?? report.status ?? null,
               status_label: report.report_statuses?.label ?? report.status ?? null,
+              filter_result_code: report.report_filter_results?.code ?? null,
+              filter_result_label: report.report_filter_results?.label ?? null,
               organisation: report.reported_org_id ? orgMap.get(report.reported_org_id) ?? "-" : "-",
               reporter: report.reporter_user_id ? userMap.get(report.reporter_user_id) ?? "-" : "-",
             })),
@@ -295,7 +427,7 @@ serve(async (req) => {
 
         const { data: report, error: reportError } = await adminClient
           .from("reports")
-          .select("*,report_statuses(code,label)")
+          .select("*,report_statuses(code,label),report_filter_results(code,label),organization_departments(name),triage_workflows(name)")
           .eq("report_id", report_id)
           .maybeSingle();
         if (reportError) throw reportError;
@@ -329,6 +461,8 @@ serve(async (req) => {
               ...report,
               status_code: report.report_statuses?.code ?? report.status ?? null,
               status_label: report.report_statuses?.label ?? report.status ?? null,
+              filter_result_code: report.report_filter_results?.code ?? null,
+              filter_result_label: report.report_filter_results?.label ?? null,
             },
             reporter,
             organisation,
@@ -340,16 +474,27 @@ serve(async (req) => {
         if (!report_id) throw new Error("report_id is required.");
         const statusCode = updates.status_code ?? updates.status ?? null;
         let statusId: number | null = updates.status_id ?? null;
+        let canonicalStatusCode: string | null = typeof statusCode === "string" ? statusCode : null;
+
         if (statusCode && !statusId) {
           const { data: statusRow } = await adminClient
             .from("report_statuses")
-            .select("status_id")
+            .select("status_id,code")
             .eq("code", statusCode)
             .maybeSingle();
           statusId = statusRow?.status_id ?? null;
+          canonicalStatusCode = statusRow?.code ?? canonicalStatusCode;
+        } else if (statusId && !canonicalStatusCode) {
+          const { data: statusRow } = await adminClient
+            .from("report_statuses")
+            .select("status_id,code")
+            .eq("status_id", statusId)
+            .maybeSingle();
+          canonicalStatusCode = statusRow?.code ?? null;
         }
+
         const allowed = {
-          status: statusCode ?? updates.status ?? null,
+          status: canonicalStatusCode ?? undefined,
           status_id: statusId ?? undefined,
           is_spam: updates.is_spam,
           spam_score: updates.spam_score,
@@ -365,6 +510,28 @@ serve(async (req) => {
           .update(allowed)
           .eq("report_id", report_id);
         if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
+      case "setFilterDecision": {
+        const {
+          report_id,
+          result_code,
+          reasoning = null,
+          is_auto = false,
+          needs_super_review = false,
+        } = payload ?? {};
+        if (!report_id) throw new Error("report_id is required.");
+        if (!result_code) throw new Error("result_code is required.");
+
+        const { error } = await adminClient.rpc("apply_report_filter_decision", {
+          p_report_id: report_id,
+          p_result_code: result_code,
+          p_reasoning: reasoning,
+          p_is_auto: is_auto,
+          p_needs_super_review: needs_super_review,
+        });
+        if (error) throw error;
+
         return jsonResponse(200, { success: true });
       }
       case "listRiskESG": {
@@ -658,7 +825,7 @@ serve(async (req) => {
         const { data: profile, error } = await adminClient
           .from("user_profiles")
           .select("first_name,last_name,display_name,email,department,job_title,profile_picture_url")
-          .eq("auth_user_id", adminUser.id)
+          .eq("auth_user_id", adminUser.authUserId)
           .maybeSingle();
         if (error) throw error;
         return jsonResponse(200, { success: true, data: { profile } });
@@ -679,7 +846,7 @@ serve(async (req) => {
         const { error } = await adminClient
           .from("user_profiles")
           .update(allowed)
-          .eq("auth_user_id", adminUser.id);
+          .eq("auth_user_id", adminUser.authUserId);
         if (error) throw error;
         return jsonResponse(200, { success: true });
       }
