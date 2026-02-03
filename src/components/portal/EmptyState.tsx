@@ -3,6 +3,8 @@ interface EmptyStateProps {
   description: string;
   actionLabel?: string;
   secondaryLabel?: string;
+  onAction?: () => void;
+  onSecondaryAction?: () => void;
 }
 
 export default function EmptyState({
@@ -10,6 +12,8 @@ export default function EmptyState({
   description,
   actionLabel,
   secondaryLabel,
+  onAction,
+  onSecondaryAction,
 }: EmptyStateProps) {
   return (
     <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white px-8 py-12 text-center">
@@ -20,12 +24,20 @@ export default function EmptyState({
       <p className="mt-2 max-w-sm text-xs text-slate-500">{description}</p>
       <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
         {actionLabel ? (
-          <button className="rounded-full bg-[var(--wb-cobalt)] px-4 py-2 text-xs font-semibold text-white">
+          <button
+            type="button"
+            className="rounded-full bg-[var(--wb-cobalt)] px-4 py-2 text-xs font-semibold text-white"
+            onClick={onAction}
+          >
             {actionLabel}
           </button>
         ) : null}
         {secondaryLabel ? (
-          <button className="rounded-full border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600">
+          <button
+            type="button"
+            className="rounded-full border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600"
+            onClick={onSecondaryAction}
+          >
             {secondaryLabel}
           </button>
         ) : null}

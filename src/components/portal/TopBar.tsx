@@ -19,6 +19,7 @@ const titleMap: Record<string, string> = {
   "/portal/org/organisations/worksites": "Worksites",
   "/portal/org/organisations/policies": "Policies",
   "/portal/org/organisations/departments": "Departments",
+  "/portal/org/organisations/triage-workflows": "Triage Workflows",
   "/portal/org/organisations/users": "Users",
   "/portal/org/organisations/add-ons": "Add-Ons",
   "/portal/org/organisations/relationships": "Relationships",

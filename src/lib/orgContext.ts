@@ -5,6 +5,8 @@ export type OrgContext = {
   userId: string;
   organizationId: number;
   organizationName: string | null;
+  approvalStatus: "pending" | "approved" | "blocked" | "removed";
+  accountStatus: "active" | "inactive";
   roleName: string | null;
   profile: {
     firstName: string;
@@ -54,17 +56,44 @@ export const loadOrgContext = async (): Promise<OrgContext> => {
   }
 
   const [{ data: orgRow }, { data: roleRow }] = await Promise.all([
-    supabase.from("organisations").select("name").eq("organization_id", organizationId).maybeSingle(),
+    supabase
+      .from("organisations")
+      .select("name,is_claimed,approval_status,account_status")
+      .eq("organization_id", organizationId)
+      .maybeSingle(),
     orgUser?.role_id
       ? supabase.from("roles").select("name").eq("role_id", orgUser.role_id).maybeSingle()
       : Promise.resolve({ data: null }),
   ]);
+
+  const approvalStatus = ((orgRow?.approval_status ??
+    (orgRow?.is_claimed ? "approved" : "pending")) as
+    | "pending"
+    | "approved"
+    | "blocked"
+    | "removed");
+  const accountStatus = ((orgRow?.account_status ??
+    (approvalStatus === "approved" ? "active" : "inactive")) as "active" | "inactive");
+  if (approvalStatus === "pending") {
+    throw new Error("Your organisation is pending system admin approval.");
+  }
+  if (approvalStatus === "blocked") {
+    throw new Error("Your organisation is currently blocked by System Admin.");
+  }
+  if (approvalStatus === "removed") {
+    throw new Error("Your organisation access has been removed. Please contact support.");
+  }
+  if (accountStatus !== "active") {
+    throw new Error("Your organisation account is inactive.");
+  }
 
   return {
     authUserId,
     userId: profileRow.user_id,
     organizationId,
     organizationName: orgRow?.name ?? null,
+    approvalStatus,
+    accountStatus,
     roleName: roleRow?.name ?? null,
     profile: {
       firstName: profileRow.first_name ?? "",

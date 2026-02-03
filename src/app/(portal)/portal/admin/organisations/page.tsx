@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import SectionCard from "@/components/portal/SectionCard";
+import Modal from "@/components/portal/Modal";
 import { adminInvoke } from "@/lib/adminApi";
 
 type OrgRow = {
@@ -12,8 +13,45 @@ type OrgRow = {
   city: string | null;
   website: string | null;
   is_claimed: boolean;
+  approval_status?: "pending" | "approved" | "blocked" | "removed" | null;
+  account_status?: "active" | "inactive" | null;
+  blocked_at?: string | null;
+  approved_at?: string | null;
+  removed_at?: string | null;
   created_at: string | null;
   user_count: number;
+  report_count: number;
+};
+
+type OrgDetails = {
+  organisation: {
+    organization_id: number;
+    name: string;
+    organization_type: string | null;
+    legal_type: string | null;
+    address: string | null;
+    city: string | null;
+    country: string | null;
+    website: string | null;
+    company_code: string | null;
+    employees_number: number | null;
+    contact_info: string | null;
+    is_claimed: boolean;
+    approval_status: "pending" | "approved" | "blocked" | "removed";
+    account_status: "active" | "inactive";
+    approved_at: string | null;
+    blocked_at: string | null;
+    removed_at: string | null;
+    removal_reason: string | null;
+    created_at: string | null;
+  };
+  users: Array<{
+    user_id: string;
+    display_name: string;
+    email: string;
+    role: string;
+    is_active: boolean;
+  }>;
   report_count: number;
 };
 
@@ -24,6 +62,9 @@ export default function AdminOrganisationsPage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [details, setDetails] = useState<OrgDetails | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -58,6 +99,94 @@ export default function AdminOrganisationsPage() {
       setError(err instanceof Error ? err.message : "Unable to update organisation.");
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const refreshRows = async () => {
+    const data = await adminInvoke<{ organisations: OrgRow[] }>("listOrganisations");
+    setRows(data.organisations);
+  };
+
+  const approveOrganisation = async (id: number) => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      await adminInvoke("approveOrganisation", { organization_id: id });
+      await refreshRows();
+      if (details?.organisation.organization_id === id) {
+        const data = await adminInvoke<OrgDetails>("getOrganisationDetails", { organization_id: id });
+        setDetails(data);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to approve organisation.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const blockOrganisation = async (id: number) => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      await adminInvoke("blockOrganisation", { organization_id: id });
+      await refreshRows();
+      if (details?.organisation.organization_id === id) {
+        const data = await adminInvoke<OrgDetails>("getOrganisationDetails", { organization_id: id });
+        setDetails(data);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to block organisation.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const unblockOrganisation = async (id: number) => {
+    setIsSaving(true);
+    setError(null);
+    try {
+      await adminInvoke("unblockOrganisation", { organization_id: id });
+      await refreshRows();
+      if (details?.organisation.organization_id === id) {
+        const data = await adminInvoke<OrgDetails>("getOrganisationDetails", { organization_id: id });
+        setDetails(data);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to unblock organisation.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const removeOrganisation = async (id: number) => {
+    const reason = window.prompt("Optional removal reason:");
+    setIsSaving(true);
+    setError(null);
+    try {
+      await adminInvoke("removeOrganisation", { organization_id: id, reason: reason || null });
+      await refreshRows();
+      if (details?.organisation.organization_id === id) {
+        const data = await adminInvoke<OrgDetails>("getOrganisationDetails", { organization_id: id });
+        setDetails(data);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to remove organisation.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const openOrganisation = async (id: number) => {
+    setLoadingDetails(true);
+    setError(null);
+    try {
+      const data = await adminInvoke<OrgDetails>("getOrganisationDetails", { organization_id: id });
+      setDetails(data);
+      setDetailsOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load organisation details.");
+    } finally {
+      setLoadingDetails(false);
     }
   };
 
@@ -98,11 +227,19 @@ export default function AdminOrganisationsPage() {
               <th className="px-4 py-3">Number of Reports</th>
               <th className="px-4 py-3">Website</th>
               <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Options</th>
             </tr>
           </thead>
           <tbody>
             {filteredRows.map((row, index) => (
               <tr key={row.organization_id} className="border-t border-slate-100">
+                {(() => {
+                  const currentApproval =
+                    row.approval_status ?? (row.is_claimed ? "approved" : "pending");
+                  const currentAccount =
+                    row.account_status ?? (currentApproval === "approved" ? "active" : "inactive");
+                  return (
+                    <>
                 <td className="px-4 py-3">{index + 1}</td>
                 <td className="px-4 py-3 font-semibold text-slate-800">{row.name}</td>
                 <td className="px-4 py-3">{row.user_count}</td>
@@ -133,22 +270,202 @@ export default function AdminOrganisationsPage() {
                   {row.website || "-"}
                 </td>
                 <td className="px-4 py-3">
-                  <button
-                    type="button"
-                    className="rounded-full border border-slate-200 px-2 py-1 text-[11px]"
-                    disabled={isSaving}
-                    onClick={() =>
-                      updateOrganisation(row.organization_id, { is_claimed: !row.is_claimed })
-                    }
-                  >
-                    {row.is_claimed ? "Active" : "Awaiting"}
-                  </button>
+                  <div className="flex min-w-[120px] flex-col gap-1">
+                    <span
+                      className={`inline-flex w-fit whitespace-nowrap rounded-full border px-2 py-1 text-[11px] leading-4 ${
+                        currentApproval === "approved"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                          : currentApproval === "blocked"
+                            ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                            : currentApproval === "removed"
+                              ? "border-rose-200 bg-rose-50 text-rose-700"
+                              : "border-amber-200 bg-amber-50 text-amber-700"
+                      }`}
+                    >
+                      {currentApproval}
+                    </span>
+                    <span
+                      className={`inline-flex w-fit whitespace-nowrap rounded-full border px-2 py-1 text-[11px] leading-4 ${
+                        currentAccount === "active"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                          : "border-slate-200 bg-slate-50 text-slate-600"
+                      }`}
+                    >
+                      {currentAccount}
+                    </span>
+                  </div>
                 </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="rounded-full border border-slate-200 px-2 py-1 text-[11px]"
+                      disabled={isSaving || loadingDetails}
+                      onClick={() => openOrganisation(row.organization_id)}
+                    >
+                      View
+                    </button>
+                    {currentApproval === "pending" ? (
+                      <button
+                        type="button"
+                        className="rounded-full bg-emerald-600 px-2 py-1 text-[11px] text-white"
+                        disabled={isSaving}
+                        onClick={() => approveOrganisation(row.organization_id)}
+                      >
+                        Approve
+                      </button>
+                    ) : currentApproval === "approved" ? (
+                      <button
+                        type="button"
+                        className="rounded-full border border-indigo-200 px-2 py-1 text-[11px] text-indigo-700"
+                        disabled={isSaving}
+                        onClick={() => blockOrganisation(row.organization_id)}
+                      >
+                        Block
+                      </button>
+                    ) : currentApproval === "blocked" ? (
+                      <button
+                        type="button"
+                        className="rounded-full bg-emerald-600 px-2 py-1 text-[11px] text-white"
+                        disabled={isSaving}
+                        onClick={() => unblockOrganisation(row.organization_id)}
+                      >
+                        Unblock
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="rounded-full bg-emerald-600 px-2 py-1 text-[11px] text-white"
+                        disabled={isSaving}
+                        onClick={() => unblockOrganisation(row.organization_id)}
+                      >
+                        Unblock
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="rounded-full border border-rose-200 px-2 py-1 text-[11px] text-rose-700"
+                      disabled={isSaving}
+                      onClick={() => removeOrganisation(row.organization_id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </td>
+                    </>
+                  );
+                })()}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      <Modal
+        open={detailsOpen}
+        title="Organisation Details"
+        description="Review and manage organisation approval."
+        onClose={() => setDetailsOpen(false)}
+      >
+        {details ? (
+          <div className="space-y-4 text-sm text-slate-600">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 p-3">
+                <p className="text-xs text-slate-400">Name</p>
+                <p className="font-semibold text-slate-900">{details.organisation.name}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-3">
+                <p className="text-xs text-slate-400">Approval Status</p>
+                <p className="font-semibold text-slate-900">
+                  {details.organisation.approval_status} / {details.organisation.account_status}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-3">
+                <p className="text-xs text-slate-400">Country / City</p>
+                <p className="font-semibold text-slate-900">
+                  {[details.organisation.country, details.organisation.city].filter(Boolean).join(", ") ||
+                    "-"}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-3">
+                <p className="text-xs text-slate-400">Reports</p>
+                <p className="font-semibold text-slate-900">{details.report_count}</p>
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 p-3">
+              <p className="text-xs text-slate-400">Users</p>
+              <div className="mt-2 space-y-2">
+                {details.users.length ? (
+                  details.users.map((user) => (
+                    <div key={user.user_id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                      <div>
+                        <p className="font-semibold text-slate-900">{user.display_name}</p>
+                        <p className="text-slate-500">{user.email}</p>
+                      </div>
+                      <p className="text-slate-500">{user.role}</p>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-slate-500">No users linked.</p>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {details.organisation.approval_status === "pending" ? (
+                <button
+                  type="button"
+                  className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white"
+                  disabled={isSaving}
+                  onClick={() => approveOrganisation(details.organisation.organization_id)}
+                >
+                  Approve
+                </button>
+              ) : null}
+              {details.organisation.approval_status === "approved" ? (
+                <button
+                  type="button"
+                  className="rounded-full border border-indigo-200 px-4 py-2 text-xs font-semibold text-indigo-700"
+                  disabled={isSaving}
+                  onClick={() => blockOrganisation(details.organisation.organization_id)}
+                >
+                  Block
+                </button>
+              ) : null}
+              {details.organisation.approval_status === "blocked" ? (
+                <button
+                  type="button"
+                  className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white"
+                  disabled={isSaving}
+                  onClick={() => unblockOrganisation(details.organisation.organization_id)}
+                >
+                  Unblock
+                </button>
+              ) : null}
+              {details.organisation.approval_status === "removed" ? (
+                <button
+                  type="button"
+                  className="rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white"
+                  disabled={isSaving}
+                  onClick={() => unblockOrganisation(details.organisation.organization_id)}
+                >
+                  Unblock
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="rounded-full border border-rose-200 px-4 py-2 text-xs font-semibold text-rose-700"
+                disabled={isSaving}
+                onClick={() => removeOrganisation(details.organisation.organization_id)}
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        ) : loadingDetails ? (
+          <p className="text-sm text-slate-500">Loading...</p>
+        ) : (
+          <p className="text-sm text-slate-500">Select an organisation to view details.</p>
+        )}
+      </Modal>
       {error ? (
         <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
           {error}

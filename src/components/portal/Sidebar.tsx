@@ -91,6 +91,7 @@ const organisationLinks = [
   { label: "Worksites", href: "/portal/org/organisations/worksites" },
   { label: "Policies", href: "/portal/org/organisations/policies" },
   { label: "Departments", href: "/portal/org/organisations/departments" },
+  { label: "Triage Workflows", href: "/portal/org/organisations/triage-workflows" },
   { label: "Users", href: "/portal/org/organisations/users" },
   { label: "Add-Ons", href: "/portal/org/organisations/add-ons" },                                     
   { label: "Relationships", href: "/portal/org/organisations/relationships" },

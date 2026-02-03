@@ -17,12 +17,20 @@ type ReportRow = {
   status_id?: number | null;
   status_code?: string | null;
   status_label?: string | null;
+  current_filter_result_id?: number | null;
+  filter_result_code?: string | null;
+  filter_result_label?: string | null;
   report_statuses?: { code: string; label: string } | null;
+  report_filter_results?: { code: string; label: string } | null;
   created_at: string | null;
   incident_location: string | null;
   is_spam: boolean | null;
   reporter_email?: string | null;
   original_language?: string | null;
+  assigned_department_id?: number | null;
+  triage_workflow_id?: number | null;
+  organization_departments?: { name: string } | null;
+  triage_workflows?: { name: string } | null;
 };
 
 type ReportDetails = {
@@ -44,6 +52,10 @@ type ReportDetails = {
     original_language?: string | null;
     is_incident_is_continuing?: boolean | null;
     intake_payload?: Record<string, unknown> | null;
+    assigned_department_id?: number | null;
+    triage_workflow_id?: number | null;
+    organization_departments?: { name: string } | null;
+    triage_workflows?: { name: string } | null;
   };
 };
 
@@ -200,7 +212,7 @@ export default function ReportsPage() {
         const { data: rows, error: reportError } = await supabase
           .from("reports")
           .select(
-            "report_id,report_code,title,description,status,status_id,created_at,incident_location,is_spam,reporter_email,original_language,report_statuses(code,label)"
+            "report_id,report_code,title,description,status,status_id,current_filter_result_id,created_at,incident_location,is_spam,reporter_email,original_language,report_statuses(code,label),report_filter_results(code,label)"
           )
           .eq("reported_org_id", context.organizationId)
           .order("created_at", { ascending: false });
@@ -212,6 +224,8 @@ export default function ReportsPage() {
             ...row,
             status_code: row.report_statuses?.code ?? row.status ?? null,
             status_label: row.report_statuses?.label ?? row.status ?? null,
+            filter_result_code: row.report_filter_results?.code ?? null,
+            filter_result_label: row.report_filter_results?.label ?? null,
           })) ?? [];
         setReports(mapped);
       } catch (err) {
@@ -341,19 +355,37 @@ export default function ReportsPage() {
         if (!statusEntry?.id) {
           throw new Error("Status data not loaded yet. Please try again.");
         }
+        const { error: statusUpdateError } = await supabase.rpc("set_report_status", {
+          p_report_id: reportId,
+          p_status_code: updates.status_code,
+          p_comment: statusComment ?? null,
+        });
+        if (statusUpdateError) throw new Error(statusUpdateError.message);
+
         payload = {
           ...payload,
           status_id: statusEntry?.id ?? null,
-          status: updates.status_code,
         };
         delete payload.status_code;
       }
       delete payload.status_comment;
-      const { error: updateError } = await supabase
-        .from("reports")
-        .update(payload)
-        .eq("report_id", reportId);
-      if (updateError) throw new Error(updateError.message);
+      const writePayload = { ...payload };
+      delete writePayload.status_id;
+      const hasWritableFields = Object.keys(writePayload).length > 0;
+
+      let updatedRow: ReportRow | null = null;
+      if (hasWritableFields) {
+        const { data, error: updateError } = await supabase
+          .from("reports")
+          .update(writePayload)
+          .eq("report_id", reportId)
+          .select(
+            "report_id,report_code,title,description,status,status_id,current_filter_result_id,created_at,incident_location,is_spam,reporter_email,original_language,report_statuses(code,label),report_filter_results(code,label)"
+          )
+          .maybeSingle();
+        if (updateError) throw new Error(updateError.message);
+        updatedRow = (data as ReportRow | null) ?? null;
+      }
       if (statusComment && updates.status_code) {
         const statusId = statusLookup[updates.status_code]?.id ?? null;
         if (statusId) {
@@ -381,19 +413,37 @@ export default function ReportsPage() {
           .order("changed_at", { ascending: false });
         setStatusHistory((historyRows ?? []) as StatusHistoryRow[]);
       }
+      const effectiveRow =
+        updatedRow ??
+        (
+          await supabase
+            .from("reports")
+            .select(
+              "report_id,report_code,title,description,status,status_id,current_filter_result_id,created_at,incident_location,is_spam,reporter_email,original_language,report_statuses(code,label),report_filter_results(code,label)"
+            )
+            .eq("report_id", reportId)
+            .maybeSingle()
+        ).data;
+
+      if (!effectiveRow) {
+        throw new Error(
+          "Status change could not be confirmed. You may not have permission to update this report."
+        );
+      }
+
+      const mappedUpdate = {
+        ...effectiveRow,
+        status_code: effectiveRow.report_statuses?.code ?? effectiveRow.status ?? null,
+        status_label: effectiveRow.report_statuses?.label ?? effectiveRow.status ?? null,
+        filter_result_code: effectiveRow.report_filter_results?.code ?? null,
+        filter_result_label: effectiveRow.report_filter_results?.label ?? null,
+      };
       setReports((prev) =>
         prev.map((row) =>
           row.report_id === reportId
             ? {
                 ...row,
-                ...updates,
-                status_id: (payload.status_id as number) ?? row.status_id ?? null,
-                status_code:
-                  (updates.status_code as string) ?? row.status_code ?? row.status ?? null,
-                status_label:
-                  updates.status_code && statusLookup[updates.status_code]
-                    ? statusLookup[updates.status_code].label
-                    : row.status_label ?? row.status ?? null,
+                ...mappedUpdate,
               }
             : row
         )
@@ -404,23 +454,77 @@ export default function ReportsPage() {
               ...prev,
               report: {
                 ...prev.report,
-                ...updates,
-                status_id: (payload.status_id as number) ?? prev.report.status_id ?? null,
-                status_code:
-                  (updates.status_code as string) ??
-                  prev.report.status_code ??
-                  prev.report.status ??
-                  null,
-                status_label:
-                  updates.status_code && statusLookup[updates.status_code]
-                    ? statusLookup[updates.status_code].label
-                    : prev.report.status_label ?? prev.report.status ?? null,
+                ...mappedUpdate,
               },
             }
           : prev
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to update report.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const applyFilterDecision = async (
+    reportId: number,
+    resultCode: "admitted" | "out_of_scope" | "unfounded" | "spam",
+    reasoning?: string | null
+  ) => {
+    setSaving(true);
+    setError(null);
+    try {
+      const { error: rpcError } = await supabase.rpc("apply_report_filter_decision", {
+        p_report_id: reportId,
+        p_result_code: resultCode,
+        p_reasoning: reasoning ?? null,
+        p_is_auto: false,
+        p_needs_super_review: false,
+      });
+      if (rpcError) throw new Error(rpcError.message);
+
+      const { data: updatedRow, error: fetchError } = await supabase
+        .from("reports")
+        .select(
+          "report_id,report_code,title,description,status,status_id,current_filter_result_id,created_at,incident_location,is_spam,reporter_email,original_language,report_statuses(code,label),report_filter_results(code,label)"
+        )
+        .eq("report_id", reportId)
+        .maybeSingle();
+      if (fetchError || !updatedRow) {
+        throw new Error(fetchError?.message ?? "Unable to refresh report after filter decision.");
+      }
+
+      const mappedUpdate = {
+        ...updatedRow,
+        status_code: updatedRow.report_statuses?.code ?? updatedRow.status ?? null,
+        status_label: updatedRow.report_statuses?.label ?? updatedRow.status ?? null,
+        filter_result_code: updatedRow.report_filter_results?.code ?? null,
+        filter_result_label: updatedRow.report_filter_results?.label ?? null,
+      };
+
+      setReports((prev) =>
+        prev.map((row) => (row.report_id === reportId ? { ...row, ...mappedUpdate } : row))
+      );
+      setDetails((prev) =>
+        prev && prev.report.report_id === reportId
+          ? {
+              ...prev,
+              report: {
+                ...prev.report,
+                ...mappedUpdate,
+              },
+            }
+          : prev
+      );
+
+      const { data: historyRows } = await supabase
+        .from("report_status_history")
+        .select("id,report_id,status_id,comment_text,changed_at,report_statuses(code,label)")
+        .eq("report_id", reportId)
+        .order("changed_at", { ascending: false });
+      setStatusHistory((historyRows ?? []) as StatusHistoryRow[]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to apply filter decision.");
     } finally {
       setSaving(false);
     }
@@ -433,7 +537,7 @@ export default function ReportsPage() {
       const { data: reportRow, error: reportError } = await supabase
         .from("reports")
         .select(
-          "report_id,report_code,title,description,status,status_id,created_at,incident_location,is_spam,incident_date,country,severity_level,reporter_email,suggested_remedy,legal_steps_taken,is_anonymous,share_contact_with_company,alert_direct_suppliers,alert_indirect_suppliers,original_language,is_incident_is_continuing,intake_payload,report_statuses(code,label)"
+          "report_id,report_code,title,description,status,status_id,current_filter_result_id,created_at,incident_location,is_spam,incident_date,country,severity_level,reporter_email,suggested_remedy,legal_steps_taken,is_anonymous,share_contact_with_company,alert_direct_suppliers,alert_indirect_suppliers,original_language,is_incident_is_continuing,intake_payload,assigned_department_id,triage_workflow_id,report_statuses(code,label),report_filter_results(code,label),organization_departments(name),triage_workflows(name)"
         )
         .eq("report_id", reportId)
         .maybeSingle();
@@ -443,6 +547,8 @@ export default function ReportsPage() {
         ...reportRow,
         status_code: reportRow.report_statuses?.code ?? reportRow.status ?? null,
         status_label: reportRow.report_statuses?.label ?? reportRow.status ?? null,
+        filter_result_code: reportRow.report_filter_results?.code ?? null,
+        filter_result_label: reportRow.report_filter_results?.label ?? null,
       };
       setDetails({ report: mapped as ReportDetails["report"] });
       setPrimaryTab("details");
@@ -830,7 +936,7 @@ export default function ReportsPage() {
           requires_anonymization: false,
         })
         .select(
-          "report_id,report_code,title,description,status,status_id,created_at,incident_location,is_spam,report_statuses(code,label)"
+          "report_id,report_code,title,description,status,status_id,current_filter_result_id,created_at,incident_location,is_spam,report_statuses(code,label),report_filter_results(code,label)"
         )
         .single();
 
@@ -843,6 +949,8 @@ export default function ReportsPage() {
             ...insertRow,
             status_code: insertRow.report_statuses?.code ?? insertRow.status ?? null,
             status_label: insertRow.report_statuses?.label ?? insertRow.status ?? null,
+            filter_result_code: insertRow.report_filter_results?.code ?? null,
+            filter_result_label: insertRow.report_filter_results?.label ?? null,
           }
         : null;
       setReports((prev) => (mapped ? [mapped, ...prev] : prev));
@@ -1071,6 +1179,14 @@ export default function ReportsPage() {
                         details.report.status ??
                         "-"}
                     </p>
+                    <p className="mt-3 text-xs text-slate-400">Assigned Department</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {details.report.organization_departments?.name ?? "-"}
+                    </p>
+                    <p className="mt-3 text-xs text-slate-400">Triage Workflow</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {details.report.triage_workflows?.name ?? "-"}
+                    </p>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
                     <p className="text-xs text-slate-400">Creation Date</p>
@@ -1133,7 +1249,12 @@ export default function ReportsPage() {
                       </p>
                       <div className="mt-4">
                         {renderStatusStepper(
-                          details.report.status_code ?? details.report.status ?? undefined,
+                          details.report.status_id
+                            ? statusById[details.report.status_id]?.code ??
+                                details.report.status_code ??
+                                details.report.status ??
+                                undefined
+                            : details.report.status_code ?? details.report.status ?? undefined,
                           details.report.status_id ?? null,
                           details.report.report_id
                         )}
@@ -1142,8 +1263,42 @@ export default function ReportsPage() {
 
                     <div className="rounded-2xl border border-slate-200 bg-white p-4">
                       <p className="text-xs text-slate-400">AI Filtration Result</p>
-                      <p className="mt-2 text-sm font-semibold text-slate-900">N/A</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">
+                        {details.report.filter_result_label ?? "N/A"}
+                      </p>
                       <p className="mt-2 text-xs text-slate-500">Reasoning: -</p>
+                      {(details.report.status_code ?? details.report.status) === "pre_evaluation" ? (
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            className="rounded-full border border-emerald-200 px-3 py-1 text-[11px] font-semibold text-emerald-700"
+                            onClick={() => applyFilterDecision(details.report.report_id, "admitted")}
+                          >
+                            Admit
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-full border border-amber-200 px-3 py-1 text-[11px] font-semibold text-amber-700"
+                            onClick={() => applyFilterDecision(details.report.report_id, "out_of_scope")}
+                          >
+                            Out of Scope
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-full border border-rose-200 px-3 py-1 text-[11px] font-semibold text-rose-700"
+                            onClick={() => applyFilterDecision(details.report.report_id, "unfounded")}
+                          >
+                            Unfounded
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-full border border-fuchsia-200 px-3 py-1 text-[11px] font-semibold text-fuchsia-700"
+                            onClick={() => applyFilterDecision(details.report.report_id, "spam")}
+                          >
+                            Spam
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
 
                     <div className="rounded-2xl border border-slate-200 bg-white p-4">
