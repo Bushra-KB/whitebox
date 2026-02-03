@@ -296,7 +296,23 @@ export default function AdminReportsPage() {
           row.report_id === reportId
             ? {
                 ...row,
-                ...refreshedReport,
+                title: refreshedReport.title ?? row.title,
+                description: refreshedReport.description ?? row.description,
+                created_at: refreshedReport.created_at ?? row.created_at,
+                incident_location: refreshedReport.incident_location ?? row.incident_location,
+                status: refreshedReport.status ?? row.status,
+                status_id: refreshedReport.status_id ?? row.status_id ?? null,
+                current_filter_result_id:
+                  refreshedReport.current_filter_result_id ?? row.current_filter_result_id ?? null,
+                is_spam: refreshedReport.is_spam ?? row.is_spam,
+                report_code: refreshedReport.report_code ?? row.report_code,
+                assigned_department_id:
+                  refreshedReport.assigned_department_id ?? row.assigned_department_id ?? null,
+                triage_workflow_id:
+                  refreshedReport.triage_workflow_id ?? row.triage_workflow_id ?? null,
+                organization_departments:
+                  refreshedReport.organization_departments ?? row.organization_departments ?? null,
+                triage_workflows: refreshedReport.triage_workflows ?? row.triage_workflows ?? null,
                 status_code: refreshedReport.status_code ?? refreshedReport.status ?? null,
                 status_label: refreshedReport.status_label ?? refreshedReport.status ?? null,
                 filter_result_code: refreshedReport.filter_result_code ?? null,
@@ -329,7 +345,23 @@ export default function AdminReportsPage() {
           row.report_id === reportId
             ? {
                 ...row,
-                ...refreshedReport,
+                title: refreshedReport.title ?? row.title,
+                description: refreshedReport.description ?? row.description,
+                created_at: refreshedReport.created_at ?? row.created_at,
+                incident_location: refreshedReport.incident_location ?? row.incident_location,
+                status: refreshedReport.status ?? row.status,
+                status_id: refreshedReport.status_id ?? row.status_id ?? null,
+                current_filter_result_id:
+                  refreshedReport.current_filter_result_id ?? row.current_filter_result_id ?? null,
+                is_spam: refreshedReport.is_spam ?? row.is_spam,
+                report_code: refreshedReport.report_code ?? row.report_code,
+                assigned_department_id:
+                  refreshedReport.assigned_department_id ?? row.assigned_department_id ?? null,
+                triage_workflow_id:
+                  refreshedReport.triage_workflow_id ?? row.triage_workflow_id ?? null,
+                organization_departments:
+                  refreshedReport.organization_departments ?? row.organization_departments ?? null,
+                triage_workflows: refreshedReport.triage_workflows ?? row.triage_workflows ?? null,
                 status_code: refreshedReport.status_code ?? refreshedReport.status ?? null,
                 status_label: refreshedReport.status_label ?? refreshedReport.status ?? null,
                 filter_result_code: refreshedReport.filter_result_code ?? null,
