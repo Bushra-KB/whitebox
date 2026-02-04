@@ -20,6 +20,12 @@ type IssueGroup = {
   count: number;
 };
 
+function normalizeNameRelation(
+  relation: { name: string } | { name: string }[] | null | undefined
+): { name: string } | null {
+  return Array.isArray(relation) ? (relation[0] ?? null) : (relation ?? null);
+}
+
 export default function IssuesPage() {
   const [riskRows, setRiskRows] = useState<RiskRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +53,13 @@ export default function IssuesPage() {
 
         if (riskError) throw new Error(riskError.message);
         if (!isMounted) return;
-        setRiskRows(riskData ?? []);
+        const normalizedRows =
+          (riskData ?? []).map((row) => ({
+            ...row,
+            report_categories: normalizeNameRelation(row.report_categories),
+            report_sub_categories: normalizeNameRelation(row.report_sub_categories),
+          })) ?? [];
+        setRiskRows(normalizedRows as RiskRow[]);
       } catch (err) {
         if (!isMounted) return;
         setError(err instanceof Error ? err.message : "Unable to load issues.");
