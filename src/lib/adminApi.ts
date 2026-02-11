@@ -24,6 +24,10 @@ export async function adminInvoke<T>(action: string, payload?: Record<string, un
         details = raw || error.message;
       }
     }
+    if (details.toLowerCase().includes("unknown action")) {
+      details =
+        "Admin API action not found on deployed edge function. Deploy `supabase/functions/admin-portal` to the same Supabase project used by this environment.";
+    }
     throw new Error(details);
   }
 

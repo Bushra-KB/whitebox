@@ -49,6 +49,8 @@ type CreateReportPayload = {
   alert_indirect_suppliers?: boolean;
   original_language?: string | null;
   intake_version?: string | null;
+  intake_form_config_id?: number | null;
+  intake_form_version?: number | null;
   intake_payload?: Record<string, unknown> | null;
   risk_categories?: RiskCategory[];
   recaptcha_token?: string | null;
@@ -266,6 +268,8 @@ serve(async (req) => {
           problem_addressed_before_details: payload.problem_addressed_before_details ?? null,
           original_language: payload.original_language ?? null,
           intake_version: payload.intake_version ?? "v1",
+          intake_form_config_id: payload.intake_form_config_id ?? null,
+          intake_form_version: payload.intake_form_version ?? null,
           intake_payload: payload.intake_payload ?? null,
         })
         .select("report_id, report_code")

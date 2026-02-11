@@ -334,6 +334,282 @@ serve(async (req) => {
         if (error) throw error;
         return jsonResponse(200, { success: true });
       }
+      case "listIntakeFormConfigs": {
+        const { data: configs, error } = await adminClient
+          .from("intake_form_configs")
+          .select(
+            "id,config_key,name,country_id,program_code,status,version,is_active,published_at,created_at,updated_at",
+          )
+          .order("updated_at", { ascending: false });
+        if (error) throw error;
+        return jsonResponse(200, { success: true, data: { configs: configs ?? [] } });
+      }
+      case "createIntakeFormConfig": {
+        const { config_key, name, country_id, program_code } = payload ?? {};
+        const key = String(config_key ?? "default").trim() || "default";
+        const label = String(name ?? "New Intake Form").trim() || "New Intake Form";
+        const normalizedProgram = String(program_code ?? "").trim() || null;
+
+        const { data: latest } = await adminClient
+          .from("intake_form_configs")
+          .select("version")
+          .eq("config_key", key)
+          .order("version", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const nextVersion = Number(latest?.version ?? 0) + 1;
+        const { data: created, error } = await adminClient
+          .from("intake_form_configs")
+          .insert({
+            config_key: key,
+            name: label,
+            country_id: country_id ? Number(country_id) : null,
+            program_code: normalizedProgram,
+            status: "draft",
+            version: nextVersion,
+            is_active: false,
+            created_by_user: adminUser.userId,
+          })
+          .select("id,config_key,name,country_id,program_code,status,version,is_active")
+          .single();
+        if (error) throw error;
+        return jsonResponse(200, { success: true, data: { config: created } });
+      }
+      case "updateIntakeFormConfig": {
+        const { id, ...updates } = payload ?? {};
+        if (!id) throw new Error("id is required.");
+        const allowed = {
+          name: typeof updates.name === "string" ? updates.name.trim() : undefined,
+          country_id: updates.country_id === null ? null : updates.country_id ? Number(updates.country_id) : undefined,
+          program_code:
+            updates.program_code === null
+              ? null
+              : typeof updates.program_code === "string"
+                ? updates.program_code.trim() || null
+                : undefined,
+          status:
+            updates.status === "draft" || updates.status === "published" || updates.status === "archived"
+              ? updates.status
+              : undefined,
+          is_active: typeof updates.is_active === "boolean" ? updates.is_active : undefined,
+        };
+        const { error } = await adminClient
+          .from("intake_form_configs")
+          .update(allowed)
+          .eq("id", Number(id));
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
+      case "publishIntakeFormConfig": {
+        const { id } = payload ?? {};
+        if (!id) throw new Error("id is required.");
+
+        const { data: config, error: configError } = await adminClient
+          .from("intake_form_configs")
+          .select("id,config_key,country_id,program_code")
+          .eq("id", Number(id))
+          .maybeSingle();
+        if (configError) throw configError;
+        if (!config) throw new Error("Config not found.");
+
+        let deactivateQuery = adminClient
+          .from("intake_form_configs")
+          .update({ is_active: false })
+          .eq("config_key", config.config_key)
+          .eq("status", "published");
+
+        deactivateQuery =
+          config.country_id === null
+            ? deactivateQuery.is("country_id", null)
+            : deactivateQuery.eq("country_id", config.country_id);
+        deactivateQuery =
+          config.program_code === null
+            ? deactivateQuery.is("program_code", null)
+            : deactivateQuery.eq("program_code", config.program_code);
+
+        const { error: deactivateError } = await deactivateQuery;
+        if (deactivateError) throw deactivateError;
+
+        const { error } = await adminClient
+          .from("intake_form_configs")
+          .update({
+            status: "published",
+            is_active: true,
+            published_by_user: adminUser.userId,
+            published_at: new Date().toISOString(),
+          })
+          .eq("id", Number(id));
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
+      case "getIntakeFormConfig": {
+        const { id } = payload ?? {};
+        if (!id) throw new Error("id is required.");
+        const configId = Number(id);
+        const [{ data: config, error: configError }, { data: fields, error: fieldsError }, { data: conditions, error: conditionsError }, { data: translations, error: translationsError }] = await Promise.all([
+          adminClient
+            .from("intake_form_configs")
+            .select("*")
+            .eq("id", configId)
+            .maybeSingle(),
+          adminClient
+            .from("intake_form_fields")
+            .select("*")
+            .eq("config_id", configId)
+            .order("step_key", { ascending: true })
+            .order("order_index", { ascending: true }),
+          adminClient
+            .from("intake_form_conditions")
+            .select("*")
+            .eq("config_id", configId)
+            .order("id", { ascending: true }),
+          adminClient
+            .from("intake_form_translations")
+            .select("*")
+            .eq("config_id", configId)
+            .order("lang_code", { ascending: true })
+            .order("field_key", { ascending: true }),
+        ]);
+        if (configError) throw configError;
+        if (fieldsError) throw fieldsError;
+        if (conditionsError) throw conditionsError;
+        if (translationsError) throw translationsError;
+        if (!config) throw new Error("Config not found.");
+        return jsonResponse(200, {
+          success: true,
+          data: {
+            config,
+            fields: fields ?? [],
+            conditions: conditions ?? [],
+            translations: translations ?? [],
+          },
+        });
+      }
+      case "upsertIntakeFormField": {
+        const { config_id, id, field_key, source, field_type, step_key, order_index, is_enabled, is_required, options_json, validation_json, mapping_target } = payload ?? {};
+        if (!config_id) throw new Error("config_id is required.");
+        if (!field_key) throw new Error("field_key is required.");
+        const row = {
+          config_id: Number(config_id),
+          field_key: String(field_key).trim(),
+          source: source === "custom" ? "custom" : "core",
+          field_type: String(field_type ?? "text").trim() || "text",
+          step_key: String(step_key ?? "step_7").trim() || "step_7",
+          order_index: Number.isFinite(Number(order_index)) ? Number(order_index) : 0,
+          is_enabled: typeof is_enabled === "boolean" ? is_enabled : true,
+          is_required: typeof is_required === "boolean" ? is_required : false,
+          options_json:
+            options_json && typeof options_json === "object"
+              ? options_json
+              : Array.isArray(options_json)
+                ? options_json
+                : [],
+          validation_json:
+            validation_json && typeof validation_json === "object" ? validation_json : {},
+          mapping_target:
+            String(mapping_target ?? `intake_payload.custom_fields.${String(field_key).trim()}`).trim(),
+        };
+
+        if (id) {
+          const { error } = await adminClient
+            .from("intake_form_fields")
+            .update(row)
+            .eq("id", Number(id));
+          if (error) throw error;
+        } else {
+          const { error } = await adminClient
+            .from("intake_form_fields")
+            .upsert(row, { onConflict: "config_id,field_key" });
+          if (error) throw error;
+        }
+        return jsonResponse(200, { success: true });
+      }
+      case "deleteIntakeFormField": {
+        const { id } = payload ?? {};
+        if (!id) throw new Error("id is required.");
+        const { error } = await adminClient
+          .from("intake_form_fields")
+          .delete()
+          .eq("id", Number(id));
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
+      case "upsertIntakeFormCondition": {
+        const { config_id, id, target_field_key, effect, rule_json } = payload ?? {};
+        if (!config_id) throw new Error("config_id is required.");
+        if (!target_field_key) throw new Error("target_field_key is required.");
+        const nextEffect =
+          effect === "show" || effect === "hide" || effect === "required" || effect === "optional"
+            ? effect
+            : "show";
+        const row = {
+          config_id: Number(config_id),
+          target_field_key: String(target_field_key).trim(),
+          effect: nextEffect,
+          rule_json: rule_json && typeof rule_json === "object" ? rule_json : {},
+        };
+        if (id) {
+          const { error } = await adminClient
+            .from("intake_form_conditions")
+            .update(row)
+            .eq("id", Number(id));
+          if (error) throw error;
+        } else {
+          const { error } = await adminClient.from("intake_form_conditions").insert(row);
+          if (error) throw error;
+        }
+        return jsonResponse(200, { success: true });
+      }
+      case "deleteIntakeFormCondition": {
+        const { id } = payload ?? {};
+        if (!id) throw new Error("id is required.");
+        const { error } = await adminClient
+          .from("intake_form_conditions")
+          .delete()
+          .eq("id", Number(id));
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
+      case "upsertIntakeFormTranslation": {
+        const { config_id, id, field_key, lang_code, label, help_text, placeholder, option_labels_json } = payload ?? {};
+        if (!config_id) throw new Error("config_id is required.");
+        if (!field_key) throw new Error("field_key is required.");
+        if (!lang_code) throw new Error("lang_code is required.");
+        const row = {
+          config_id: Number(config_id),
+          field_key: String(field_key).trim(),
+          lang_code: String(lang_code).trim().toLowerCase(),
+          label: typeof label === "string" ? label : null,
+          help_text: typeof help_text === "string" ? help_text : null,
+          placeholder: typeof placeholder === "string" ? placeholder : null,
+          option_labels_json:
+            option_labels_json && typeof option_labels_json === "object" ? option_labels_json : {},
+        };
+        if (id) {
+          const { error } = await adminClient
+            .from("intake_form_translations")
+            .update(row)
+            .eq("id", Number(id));
+          if (error) throw error;
+        } else {
+          const { error } = await adminClient
+            .from("intake_form_translations")
+            .upsert(row, { onConflict: "config_id,field_key,lang_code" });
+          if (error) throw error;
+        }
+        return jsonResponse(200, { success: true });
+      }
+      case "deleteIntakeFormTranslation": {
+        const { id } = payload ?? {};
+        if (!id) throw new Error("id is required.");
+        const { error } = await adminClient
+          .from("intake_form_translations")
+          .delete()
+          .eq("id", Number(id));
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
       case "getOrganisationDetails": {
         const { organization_id } = payload ?? {};
         if (!organization_id) throw new Error("organization_id is required.");

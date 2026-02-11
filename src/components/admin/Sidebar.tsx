@@ -23,6 +23,7 @@ const nav = [
   { label: "Archive", href: "/portal/admin/archive", icon: icon("M4 7h16v4H4V7Zm2 6h12v7H6v-7Z") },
   { label: "Spam", href: "/portal/admin/spam", icon: icon("M6 7h12M9 7V5a3 3 0 0 1 6 0v2M7 7l1 13h8l1-13") },
   { label: "Policies", href: "/portal/admin/policies", icon: icon("M6 4h8l4 4v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z") },
+  { label: "Intake Form", href: "/portal/admin/intake-form", icon: icon("M6 4h12M6 10h12M6 16h8M4 4h.01M4 10h.01M4 16h.01") },
   { label: "Security", href: "/portal/admin/security", icon: icon("M12 3 5 6v6c0 4.5 3.1 8.4 7 9 3.9-.6 7-4.5 7-9V6l-7-3Z") },
   { label: "Audio", href: "/portal/admin/audio", icon: icon("M5 9v6h4l5 4V5l-5 4H5Z") },
   {

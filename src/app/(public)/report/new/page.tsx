@@ -64,6 +64,48 @@ type FieldHelpState = {
   easy: string;
 };
 
+type IntakeConfigField = {
+  id: number;
+  field_key: string;
+  source: "core" | "custom";
+  field_type: string;
+  step_key: string;
+  order_index: number;
+  is_enabled: boolean;
+  is_required: boolean;
+  options_json: unknown;
+  validation_json: unknown;
+  mapping_target: string;
+};
+
+type IntakeConfigCondition = {
+  id: number;
+  target_field_key: string;
+  effect: "show" | "hide" | "required" | "optional";
+  rule_json: unknown;
+};
+
+type IntakeConfigTranslation = {
+  id: number;
+  field_key: string;
+  lang_code: string;
+  label: string | null;
+  help_text: string | null;
+  placeholder: string | null;
+  option_labels_json: unknown;
+};
+
+type ActiveIntakeConfig = {
+  config: {
+    id: number;
+    version: number;
+    config_key: string;
+  };
+  fields: IntakeConfigField[];
+  conditions: IntakeConfigCondition[];
+  translations: IntakeConfigTranslation[];
+};
+
 const isEnglishLanguage = (language: Pick<LanguageOption, "name" | "code">) => {
   const code = (language.code || "").trim().toLowerCase();
   const name = (language.name || "").trim().toLowerCase();
@@ -490,6 +532,8 @@ export default function ReportNewPage() {
   const [showErrors, setShowErrors] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [activeIntakeConfig, setActiveIntakeConfig] = useState<ActiveIntakeConfig | null>(null);
+  const [customFieldValues, setCustomFieldValues] = useState<Record<string, string | string[] | boolean>>({});
 
   const [companyForm, setCompanyForm] = useState({
     name: "",
@@ -590,6 +634,132 @@ export default function ReportNewPage() {
     return fallback;
   }, [getLanguageCandidates, intakeCopy, selectedFormLanguageCode]);
 
+  const stepKey = useMemo(() => `step_${stepIndex + 1}`, [stepIndex]);
+
+  const intakeFields = useMemo(() => activeIntakeConfig?.fields ?? [], [activeIntakeConfig]);
+  const intakeConditions = useMemo(() => activeIntakeConfig?.conditions ?? [], [activeIntakeConfig]);
+  const intakeTranslations = useMemo(() => activeIntakeConfig?.translations ?? [], [activeIntakeConfig]);
+
+  const getFieldCurrentValue = useCallback(
+    (fieldKey: string): unknown => {
+      if (fieldKey in form) {
+        return (form as unknown as Record<string, unknown>)[fieldKey];
+      }
+      return customFieldValues[fieldKey];
+    },
+    [customFieldValues, form]
+  );
+
+  const evaluateConditionRule = useCallback(
+    (rule: unknown): boolean => {
+      if (!rule || typeof rule !== "object") return false;
+      const data = rule as Record<string, unknown>;
+      if (Array.isArray(data.and)) {
+        return data.and.every((item) => evaluateConditionRule(item));
+      }
+      if (Array.isArray(data.or)) {
+        return data.or.some((item) => evaluateConditionRule(item));
+      }
+
+      const op = String(data.op ?? "eq").toLowerCase();
+      const field = String(data.field ?? "");
+      if (!field) return false;
+      const left = getFieldCurrentValue(field);
+      const right = data.value;
+
+      if (op === "eq") return String(left ?? "") === String(right ?? "");
+      if (op === "neq") return String(left ?? "") !== String(right ?? "");
+      if (op === "in" && Array.isArray(data.values)) return data.values.map(String).includes(String(left ?? ""));
+      if (op === "not_in" && Array.isArray(data.values)) return !data.values.map(String).includes(String(left ?? ""));
+      if (op === "exists") return left !== undefined && left !== null && String(left).trim() !== "";
+      return false;
+    },
+    [getFieldCurrentValue]
+  );
+
+  const fieldVisibility = useMemo(() => {
+    const map = new Map<string, boolean>();
+    intakeFields.forEach((field) => {
+      map.set(field.field_key, field.is_enabled);
+    });
+    intakeConditions.forEach((condition) => {
+      const pass = evaluateConditionRule(condition.rule_json);
+      if (!pass) return;
+      if (condition.effect === "show") map.set(condition.target_field_key, true);
+      if (condition.effect === "hide") map.set(condition.target_field_key, false);
+    });
+    return map;
+  }, [evaluateConditionRule, intakeConditions, intakeFields]);
+
+  const fieldRequired = useMemo(() => {
+    const map = new Map<string, boolean>();
+    intakeFields.forEach((field) => {
+      map.set(field.field_key, field.is_required);
+    });
+    intakeConditions.forEach((condition) => {
+      const pass = evaluateConditionRule(condition.rule_json);
+      if (!pass) return;
+      if (condition.effect === "required") map.set(condition.target_field_key, true);
+      if (condition.effect === "optional") map.set(condition.target_field_key, false);
+    });
+    return map;
+  }, [evaluateConditionRule, intakeConditions, intakeFields]);
+
+  const isFieldVisible = useCallback(
+    (fieldKey: string, fallback = true) => fieldVisibility.get(fieldKey) ?? fallback,
+    [fieldVisibility]
+  );
+
+  const isFieldRequired = useCallback(
+    (fieldKey: string, fallback = false) => fieldRequired.get(fieldKey) ?? fallback,
+    [fieldRequired]
+  );
+
+  const customFieldsForCurrentStep = useMemo(
+    () =>
+      intakeFields
+        .filter((field) => field.source === "custom" && field.step_key === stepKey)
+        .filter((field) => isFieldVisible(field.field_key, true))
+        .sort((a, b) => a.order_index - b.order_index),
+    [intakeFields, isFieldVisible, stepKey]
+  );
+
+  const translateFieldText = useCallback(
+    (fieldKey: string, slot: "label" | "help_text" | "placeholder", fallback: string) => {
+      const langCandidates = getLanguageCandidates(selectedFormLanguageCode);
+      for (const code of langCandidates) {
+        const row = intakeTranslations.find(
+          (item) => item.field_key === fieldKey && item.lang_code.toLowerCase() === code
+        );
+        if (!row) continue;
+        const value = row[slot];
+        if (typeof value === "string" && value.trim()) return value;
+      }
+      return fallback;
+    },
+    [getLanguageCandidates, intakeTranslations, selectedFormLanguageCode]
+  );
+
+  const translateFieldOptionLabel = useCallback(
+    (fieldKey: string, optionValue: string, fallback: string) => {
+      const langCandidates = getLanguageCandidates(selectedFormLanguageCode);
+      for (const code of langCandidates) {
+        const row = intakeTranslations.find(
+          (item) => item.field_key === fieldKey && item.lang_code.toLowerCase() === code
+        );
+        if (!row) continue;
+        const optionLabels =
+          row.option_labels_json && typeof row.option_labels_json === "object"
+            ? (row.option_labels_json as Record<string, unknown>)
+            : null;
+        const translated = optionLabels?.[optionValue];
+        if (typeof translated === "string" && translated.trim()) return translated;
+      }
+      return fallback;
+    },
+    [getLanguageCandidates, intakeTranslations, selectedFormLanguageCode]
+  );
+
   const helpText = (key: string, standard: string, easy: string) =>
     t(key, easyReadMode ? easy : standard);
 
@@ -609,7 +779,7 @@ export default function ReportNewPage() {
       .replace(/^_+|_+$/g, "")
       .slice(0, 80) || "field_help";
 
-  const buildFieldHelp = (
+  const buildFieldHelp = useCallback((
     key: string,
     titleFallback: string,
     standardFallback: string,
@@ -618,9 +788,9 @@ export default function ReportNewPage() {
     title: t(`${key}_title`, titleFallback),
     standard: t(`${key}_standard`, standardFallback),
     easy: t(`${key}_easy`, easyFallback),
-  });
+  }), [t]);
 
-  const resolveHelpByText = (raw: string): FieldHelpState => {
+  const resolveHelpByText = useCallback((raw: string): FieldHelpState => {
     const text = raw.toLowerCase();
     if (text.includes("captcha")) {
       return buildFieldHelp(
@@ -820,7 +990,7 @@ export default function ReportNewPage() {
       "Fill this field with accurate and complete information so the case can be processed without delay.",
       "Complete this field before moving to the next step."
     );
-  };
+  }, [buildFieldHelp]);
 
   const getElementSpeechText = (target: EventTarget | null): string => {
     if (!(target instanceof HTMLElement)) return "";
@@ -1036,6 +1206,30 @@ export default function ReportNewPage() {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+    const countryId = form.formCountry ? Number(form.formCountry) : null;
+
+    const loadIntakeConfig = async () => {
+      const { data } = await supabase.rpc("get_active_intake_form_config", {
+        p_country_id: Number.isFinite(countryId) ? countryId : null,
+        p_program_code: form.procedureType || null,
+      });
+
+      if (!isMounted) return;
+      if (!data || typeof data !== "object") {
+        setActiveIntakeConfig(null);
+        return;
+      }
+      setActiveIntakeConfig(data as ActiveIntakeConfig);
+    };
+
+    loadIntakeConfig();
+    return () => {
+      isMounted = false;
+    };
+  }, [form.formCountry, form.procedureType]);
+
+  useEffect(() => {
     const loadWorksites = async () => {
       const orgId = Number(form.incidentCompany);
       if (!orgId) {
@@ -1237,7 +1431,7 @@ export default function ReportNewPage() {
       element.setAttribute("title", description);
       element.setAttribute("data-help-text", description);
     });
-  }, [stepIndex, easyReadMode, form.formLanguage, form.inputLanguage]);
+  }, [stepIndex, easyReadMode, form.formLanguage, form.inputLanguage, resolveHelpByText]);
 
   useEffect(() => {
     if (!form.isAnonymous) return;
@@ -1309,29 +1503,33 @@ export default function ReportNewPage() {
 
     if (stepIndex === 0) {
       if (!step1Enabled) errors.captcha = t("error_captcha_required", "Complete the captcha to continue.");
-      if (!form.formCountry) errors.formCountry = t("error_country_required", "Select a country.");
-      if (!form.formLanguage) errors.formLanguage = t("error_form_language_required", "Select a form language.");
-      if (form.useDifferentInputLanguage && !form.inputLanguage) {
+      if (isFieldVisible("formCountry", true) && isFieldRequired("formCountry", true) && !form.formCountry) {
+        errors.formCountry = t("error_country_required", "Select a country.");
+      }
+      if (isFieldVisible("formLanguage", true) && isFieldRequired("formLanguage", true) && !form.formLanguage) {
+        errors.formLanguage = t("error_form_language_required", "Select a form language.");
+      }
+      if (isFieldVisible("inputLanguage", true) && form.useDifferentInputLanguage && isFieldRequired("inputLanguage", true) && !form.inputLanguage) {
         errors.inputLanguage = t("error_input_language_required", "Select an input language.");
       }
     }
 
     if (stepIndex === 1) {
-      if (!form.acceptPrivacy) errors.acceptPrivacy = t("error_required", "Required.");
-      if (!form.acceptDataShare) errors.acceptDataShare = t("error_required", "Required.");
-      if (!form.acceptDataTransfer) errors.acceptDataTransfer = t("error_required", "Required.");
-      if (!form.acceptSensitive) errors.acceptSensitive = t("error_required", "Required.");
-      if (!form.acceptProcedureRules) errors.acceptProcedureRules = t("error_required", "Required.");
+      if (isFieldVisible("acceptPrivacy", true) && isFieldRequired("acceptPrivacy", true) && !form.acceptPrivacy) errors.acceptPrivacy = t("error_required", "Required.");
+      if (isFieldVisible("acceptDataShare", true) && isFieldRequired("acceptDataShare", true) && !form.acceptDataShare) errors.acceptDataShare = t("error_required", "Required.");
+      if (isFieldVisible("acceptDataTransfer", true) && isFieldRequired("acceptDataTransfer", true) && !form.acceptDataTransfer) errors.acceptDataTransfer = t("error_required", "Required.");
+      if (isFieldVisible("acceptSensitive", true) && isFieldRequired("acceptSensitive", true) && !form.acceptSensitive) errors.acceptSensitive = t("error_required", "Required.");
+      if (isFieldVisible("acceptProcedureRules", true) && isFieldRequired("acceptProcedureRules", true) && !form.acceptProcedureRules) errors.acceptProcedureRules = t("error_required", "Required.");
     }
 
     if (stepIndex === 2) {
       if (!form.isAnonymous) {
-        if (!form.reporterEmail.trim()) {
+        if (isFieldVisible("reporterEmail", true) && isFieldRequired("reporterEmail", true) && !form.reporterEmail.trim()) {
           errors.reporterEmail = t("error_email_required", "Email is required.");
-        } else if (!isValidEmail(form.reporterEmail)) {
+        } else if (isFieldVisible("reporterEmail", true) && form.reporterEmail.trim() && !isValidEmail(form.reporterEmail)) {
           errors.reporterEmail = t("error_email_invalid", "Enter a valid email.");
         }
-        if (!form.reporterPassword.trim()) {
+        if (isFieldVisible("reporterPassword", true) && isFieldRequired("reporterPassword", true) && !form.reporterPassword.trim()) {
           errors.reporterPassword = t("error_password_required", "Password is required.");
         }
         if (!isValidPhone(form.reporterPhone)) {
@@ -1358,20 +1556,20 @@ export default function ReportNewPage() {
     }
 
     if (stepIndex === 3) {
-      if (!form.incidentCompany) errors.incidentCompany = t("error_company_required", "Select a company.");
-      if (!form.incidentCompanyEmployment) {
+      if (isFieldVisible("incidentCompany", true) && isFieldRequired("incidentCompany", true) && !form.incidentCompany) errors.incidentCompany = t("error_company_required", "Select a company.");
+      if (isFieldVisible("incidentCompanyEmployment", true) && isFieldRequired("incidentCompanyEmployment", true) && !form.incidentCompanyEmployment) {
         errors.incidentCompanyEmployment = t("error_option_required", "Select an option.");
       }
-      if (worksiteOptions.length > 0 && !form.worksiteId) {
+      if (isFieldVisible("worksiteId", true) && isFieldRequired("worksiteId", false) && worksiteOptions.length > 0 && !form.worksiteId) {
         errors.worksiteId = t("error_worksite_required", "Select a worksite.");
       }
-      if (!form.worksitedEmployee) {
+      if (isFieldVisible("worksitedEmployee", true) && isFieldRequired("worksitedEmployee", true) && !form.worksitedEmployee) {
         errors.worksitedEmployee = t("error_option_required", "Select an option.");
       }
     }
 
     if (stepIndex === 4) {
-      if (!form.ngoRepresentation) {
+      if (isFieldVisible("ngoRepresentation", true) && isFieldRequired("ngoRepresentation", true) && !form.ngoRepresentation) {
         errors.ngoRepresentation = t(
           "error_ngo_representation_required",
           "Select whether an NGO is representing this case."
@@ -1390,13 +1588,13 @@ export default function ReportNewPage() {
     }
 
     if (stepIndex === 5) {
-      if (!form.alertDirectCustomers) {
+      if (isFieldVisible("alertDirectCustomers", true) && isFieldRequired("alertDirectCustomers", true) && !form.alertDirectCustomers) {
         errors.alertDirectCustomers = t(
           "error_direct_alert_required",
           "Select whether direct customers should be alerted."
         );
       }
-      if (!form.alertIndirectCustomers) {
+      if (isFieldVisible("alertIndirectCustomers", true) && isFieldRequired("alertIndirectCustomers", true) && !form.alertIndirectCustomers) {
         errors.alertIndirectCustomers = t(
           "error_indirect_alert_required",
           "Select whether indirect customers should be alerted."
@@ -1417,18 +1615,18 @@ export default function ReportNewPage() {
     }
 
     if (stepIndex === 6) {
-      if (!form.incidentType) errors.incidentType = t("error_incident_type_required", "Select incident type.");
-      if (!form.subject.trim()) errors.subject = t("error_subject_required", "Subject is required.");
-      if (!form.description.trim()) errors.description = t("error_description_required", "Description is required.");
-      if (!form.incidentStartDate) errors.incidentStartDate = t("error_incident_start_required", "Incident start date is required.");
-      if (!form.riskCategory) errors.riskCategory = t("error_category_required", "Select a category.");
-      if (!form.addressedBefore) {
+      if (isFieldVisible("incidentType", true) && isFieldRequired("incidentType", true) && !form.incidentType) errors.incidentType = t("error_incident_type_required", "Select incident type.");
+      if (isFieldVisible("subject", true) && isFieldRequired("subject", true) && !form.subject.trim()) errors.subject = t("error_subject_required", "Subject is required.");
+      if (isFieldVisible("description", true) && isFieldRequired("description", true) && !form.description.trim()) errors.description = t("error_description_required", "Description is required.");
+      if (isFieldVisible("incidentStartDate", true) && isFieldRequired("incidentStartDate", true) && !form.incidentStartDate) errors.incidentStartDate = t("error_incident_start_required", "Incident start date is required.");
+      if (isFieldVisible("riskCategory", true) && isFieldRequired("riskCategory", true) && !form.riskCategory) errors.riskCategory = t("error_category_required", "Select a category.");
+      if (isFieldVisible("addressedBefore", true) && isFieldRequired("addressedBefore", true) && !form.addressedBefore) {
         errors.addressedBefore = t(
           "error_addressed_before_required",
           "Indicate if the problem was addressed before."
         );
       }
-      if (!form.legalStepsTaken) {
+      if (isFieldVisible("legalStepsTaken", true) && isFieldRequired("legalStepsTaken", true) && !form.legalStepsTaken) {
         errors.legalStepsTaken = t("error_legal_steps_required", "Indicate if legal steps were taken.");
       }
       if (form.legalStepsTaken === "yes" && !form.legalStepsDetails.trim()) {
@@ -1442,11 +1640,30 @@ export default function ReportNewPage() {
       }
     }
 
+    customFieldsForCurrentStep.forEach((field) => {
+      const value = customFieldValues[field.field_key];
+      const required = isFieldRequired(field.field_key, field.is_required);
+      if (!required) return;
+      const empty =
+        value === null ||
+        value === undefined ||
+        (typeof value === "string" && !value.trim()) ||
+        (Array.isArray(value) && value.length === 0) ||
+        value === false;
+      if (empty) {
+        errors[`custom_${field.field_key}`] = t("error_required", "Required.");
+      }
+    });
+
     return errors;
   }, [
     form,
     stepIndex,
     step1Enabled,
+    customFieldValues,
+    customFieldsForCurrentStep,
+    isFieldRequired,
+    isFieldVisible,
     worksiteOptions.length,
     t,
   ]);
@@ -1549,7 +1766,12 @@ export default function ReportNewPage() {
         alert_indirect_suppliers: form.alertIndirectCustomers === "yes",
         original_language: inputLanguageName,
         intake_version: "v1",
+        intake_form_config_id: activeIntakeConfig?.config?.id ?? null,
+        intake_form_version: activeIntakeConfig?.config?.version ?? null,
         intake_payload: {
+          intake_form_config_key: activeIntakeConfig?.config?.config_key ?? null,
+          intake_form_config_id: activeIntakeConfig?.config?.id ?? null,
+          intake_form_version: activeIntakeConfig?.config?.version ?? null,
           form_language: formLanguageName,
           input_language: inputLanguageName,
           form_country: formCountryName,
@@ -1581,6 +1803,7 @@ export default function ReportNewPage() {
               }
             : null,
           attachments: attachmentPaths,
+          custom_fields: customFieldValues,
         },
         auth_user_id: authId,
         reporter_display_name: form.reporterName || null,
@@ -1776,6 +1999,175 @@ export default function ReportNewPage() {
       country: "",
     });
     setWorksiteErrors({});
+  };
+
+  const renderCustomFields = () => {
+    if (!customFieldsForCurrentStep.length) return null;
+
+    return (
+      <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
+          {t("custom_fields_title", "Additional information")}
+        </p>
+        {customFieldsForCurrentStep.map((field) => {
+          const value = customFieldValues[field.field_key];
+          const label = translateFieldText(field.field_key, "label", field.field_key);
+          const placeholder = translateFieldText(field.field_key, "placeholder", "");
+          const help = translateFieldText(field.field_key, "help_text", "");
+          const showError = showErrors && formErrors[`custom_${field.field_key}`];
+          const options = Array.isArray(field.options_json) ? field.options_json : [];
+
+          if (field.field_type === "textarea") {
+            return (
+              <div key={field.field_key}>
+                <label className="text-sm font-medium text-slate-700">{label}</label>
+                <textarea
+                  className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm"
+                  rows={4}
+                  placeholder={placeholder}
+                  value={typeof value === "string" ? value : ""}
+                  onChange={(event) =>
+                    setCustomFieldValues((prev) => ({ ...prev, [field.field_key]: event.target.value }))
+                  }
+                />
+                {help ? <p className="mt-1 text-xs text-slate-500">{help}</p> : null}
+                {showError ? <p className="mt-1 text-xs text-rose-500">{formErrors[`custom_${field.field_key}`]}</p> : null}
+              </div>
+            );
+          }
+
+          if (field.field_type === "select" || field.field_type === "radio") {
+            if (field.field_type === "select") {
+              return (
+                <div key={field.field_key}>
+                  <label className="text-sm font-medium text-slate-700">{label}</label>
+                  <select
+                    className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm"
+                    value={typeof value === "string" ? value : ""}
+                    onChange={(event) =>
+                      setCustomFieldValues((prev) => ({ ...prev, [field.field_key]: event.target.value }))
+                    }
+                  >
+                    <option value="">{placeholder || t("select_option_placeholder", "Select an option")}</option>
+                    {options.map((option, index) => {
+                      const asObj = typeof option === "object" && option !== null ? (option as Record<string, unknown>) : null;
+                      const rawValue = asObj ? String(asObj.value ?? asObj.label ?? index) : String(option);
+                      const rawLabel = asObj ? String(asObj.label ?? asObj.value ?? rawValue) : String(option);
+                      const translatedLabel = translateFieldOptionLabel(field.field_key, rawValue, rawLabel);
+                      return (
+                        <option key={`${field.field_key}-${rawValue}-${index}`} value={rawValue}>
+                          {translatedLabel}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {help ? <p className="mt-1 text-xs text-slate-500">{help}</p> : null}
+                  {showError ? <p className="mt-1 text-xs text-rose-500">{formErrors[`custom_${field.field_key}`]}</p> : null}
+                </div>
+              );
+            }
+
+            return (
+              <div key={field.field_key}>
+                <p className="text-sm font-medium text-slate-700">{label}</p>
+                <div className="mt-2 flex flex-wrap gap-4 text-sm text-slate-600">
+                  {options.map((option, index) => {
+                    const asObj = typeof option === "object" && option !== null ? (option as Record<string, unknown>) : null;
+                    const rawValue = asObj ? String(asObj.value ?? asObj.label ?? index) : String(option);
+                    const rawLabel = asObj ? String(asObj.label ?? asObj.value ?? rawValue) : String(option);
+                    const translatedLabel = translateFieldOptionLabel(field.field_key, rawValue, rawLabel);
+                    return (
+                      <label key={`${field.field_key}-${rawValue}-${index}`} className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          checked={String(value ?? "") === rawValue}
+                          onChange={() =>
+                            setCustomFieldValues((prev) => ({ ...prev, [field.field_key]: rawValue }))
+                          }
+                        />
+                        {translatedLabel}
+                      </label>
+                    );
+                  })}
+                </div>
+                {help ? <p className="mt-1 text-xs text-slate-500">{help}</p> : null}
+                {showError ? <p className="mt-1 text-xs text-rose-500">{formErrors[`custom_${field.field_key}`]}</p> : null}
+              </div>
+            );
+          }
+
+          if (field.field_type === "multiselect") {
+            const selectedValues = Array.isArray(value) ? value.map(String) : [];
+            return (
+              <div key={field.field_key}>
+                <label className="text-sm font-medium text-slate-700">{label}</label>
+                <select
+                  multiple
+                  className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm"
+                  value={selectedValues}
+                  onChange={(event) => {
+                    const nextValues = Array.from(event.target.selectedOptions).map((item) => item.value);
+                    setCustomFieldValues((prev) => ({ ...prev, [field.field_key]: nextValues }));
+                  }}
+                >
+                  {options.map((option, index) => {
+                    const asObj = typeof option === "object" && option !== null ? (option as Record<string, unknown>) : null;
+                    const rawValue = asObj ? String(asObj.value ?? asObj.label ?? index) : String(option);
+                    const rawLabel = asObj ? String(asObj.label ?? asObj.value ?? rawValue) : String(option);
+                    const translatedLabel = translateFieldOptionLabel(field.field_key, rawValue, rawLabel);
+                    return (
+                      <option key={`${field.field_key}-${rawValue}-${index}`} value={rawValue}>
+                        {translatedLabel}
+                      </option>
+                    );
+                  })}
+                </select>
+                {help ? <p className="mt-1 text-xs text-slate-500">{help}</p> : null}
+                {showError ? <p className="mt-1 text-xs text-rose-500">{formErrors[`custom_${field.field_key}`]}</p> : null}
+              </div>
+            );
+          }
+
+          if (field.field_type === "checkbox") {
+            return (
+              <div key={field.field_key}>
+                <label className="flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(value)}
+                    onChange={(event) =>
+                      setCustomFieldValues((prev) => ({ ...prev, [field.field_key]: event.target.checked }))
+                    }
+                  />
+                  {label}
+                </label>
+                {help ? <p className="mt-1 text-xs text-slate-500">{help}</p> : null}
+                {showError ? <p className="mt-1 text-xs text-rose-500">{formErrors[`custom_${field.field_key}`]}</p> : null}
+              </div>
+            );
+          }
+
+          const allowedTypes = new Set(["text", "number", "date", "time", "email", "password"]);
+          const type = allowedTypes.has(field.field_type) ? field.field_type : "text";
+          return (
+            <div key={field.field_key}>
+              <label className="text-sm font-medium text-slate-700">{label}</label>
+              <input
+                className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm"
+                type={type}
+                placeholder={placeholder}
+                value={typeof value === "string" ? value : ""}
+                onChange={(event) =>
+                  setCustomFieldValues((prev) => ({ ...prev, [field.field_key]: event.target.value }))
+                }
+              />
+              {help ? <p className="mt-1 text-xs text-slate-500">{help}</p> : null}
+              {showError ? <p className="mt-1 text-xs text-rose-500">{formErrors[`custom_${field.field_key}`]}</p> : null}
+            </div>
+          );
+        })}
+      </div>
+    );
   };
 
   return (
@@ -3102,6 +3494,8 @@ export default function ReportNewPage() {
               </div>
             </div>
           )}
+
+          {stepIndex < steps.length - 1 ? renderCustomFields() : null}
         </div>
 
         {stepIndex < steps.length - 1 ? (
