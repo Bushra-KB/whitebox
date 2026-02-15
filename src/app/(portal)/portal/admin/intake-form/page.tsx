@@ -73,8 +73,14 @@ export default function IntakeFormBuilderPage() {
     () => configs.find((row) => row.id === selectedConfigId) ?? null,
     [configs, selectedConfigId]
   );
+  const isSelectedConfigDefaultGlobal = Boolean(
+    selectedConfig &&
+      selectedConfig.config_key === "default" &&
+      selectedConfig.country_id === null &&
+      selectedConfig.program_code === null
+  );
 
-  const loadAll = async () => {
+  const loadAll = async (preferredConfigId?: number | null) => {
     setError(null);
     const [cfgData, langData, countryData] = await Promise.all([
       adminInvoke<{ configs: ConfigRow[] }>("listIntakeFormConfigs"),
@@ -84,9 +90,15 @@ export default function IntakeFormBuilderPage() {
     setConfigs(cfgData.configs);
     setLanguages(langData.languages);
     setCountries(countryData.countries);
-    if (!selectedConfigId && cfgData.configs.length) {
+    const targetId = preferredConfigId ?? selectedConfigId;
+    if (targetId && cfgData.configs.some((row) => row.id === targetId)) {
+      setSelectedConfigId(targetId);
+    } else if (cfgData.configs.length) {
       setSelectedConfigId(cfgData.configs[0].id);
+    } else {
+      setSelectedConfigId(null);
     }
+    return cfgData.configs;
   };
 
   const loadConfigDetails = async (configId: number) => {
@@ -151,6 +163,55 @@ export default function IntakeFormBuilderPage() {
               await loadAll();
             })}>Create draft</button>
           </div>
+
+          {selectedConfig ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="text-xs text-slate-600">
+                Selected: <span className="font-semibold text-slate-900">{selectedConfig.name}</span> ({selectedConfig.config_key} v{selectedConfig.version})
+              </p>
+              {selectedConfig.status === "published" ? (
+                <button
+                  type="button"
+                  className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700 disabled:opacity-60"
+                  disabled={isSaving}
+                  onClick={() =>
+                    runSave(async () => {
+                      await adminInvoke("unpublishIntakeFormConfig", { id: selectedConfig.id });
+                      await loadAll(selectedConfig.id);
+                      await loadConfigDetails(selectedConfig.id);
+                    })
+                  }
+                >
+                  Unpublish
+                </button>
+              ) : null}
+              {!isSelectedConfigDefaultGlobal ? (
+                <button
+                  type="button"
+                  className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-700 disabled:opacity-60"
+                  disabled={isSaving || selectedConfig.status === "published" || selectedConfig.is_active}
+                  onClick={() =>
+                    runSave(async () => {
+                      await adminInvoke("deleteIntakeFormConfig", { id: selectedConfig.id });
+                      const nextConfigs = await loadAll();
+                      const nextId = nextConfigs[0]?.id ?? null;
+                      if (nextId) {
+                        await loadConfigDetails(nextId);
+                      } else {
+                        setFields([]);
+                        setConditions([]);
+                        setTranslations([]);
+                      }
+                    })
+                  }
+                >
+                  Remove form
+                </button>
+              ) : (
+                <p className="text-xs text-slate-500">Default form cannot be removed.</p>
+              )}
+            </div>
+          ) : null}
 
           <div className="mt-4 space-y-2">
             {configs.map((cfg) => (

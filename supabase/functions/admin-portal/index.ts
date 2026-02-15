@@ -18,6 +18,15 @@ const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
 const adminClient = createClient(supabaseUrl, serviceRoleKey);
+const ADMIN_USER_TYPES = new Set(["administrator", "admin", "system_admin"]);
+const ALLOWED_USER_TYPES = new Set([
+  "administrator",
+  "admin",
+  "system_admin",
+  "organization_owner",
+  "independent",
+  "anonymous",
+]);
 
 type AdminActionPayload = {
   action: string;
@@ -40,6 +49,13 @@ function normalizeTypeKey(value: unknown) {
   return raw;
 }
 
+function normalizeUserType(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+}
+
 async function requireAdmin(authHeader: string) {
   if (!anonKey) {
     throw new Error("SUPABASE_ANON_KEY is missing for admin auth.");
@@ -59,7 +75,8 @@ async function requireAdmin(authHeader: string) {
     .eq("auth_user_id", data.user.id)
     .maybeSingle();
   if (profileError) throw profileError;
-  if (!profile || profile.user_type !== "administrator") {
+  const userType = normalizeUserType(profile?.user_type);
+  if (!profile || !ADMIN_USER_TYPES.has(userType)) {
     throw new Error("Forbidden");
   }
   return {
@@ -152,11 +169,208 @@ serve(async (req) => {
           },
         });
       }
+      case "adminAlerts": {
+        const todayIso = new Date().toISOString().slice(0, 10);
+
+        const [
+          { count: spamReportsCount, error: spamReportsCountError },
+          { count: pendingOrganisationsCount, error: pendingOrganisationsCountError },
+          { count: overdueActionsCount, error: overdueActionsCountError },
+          { count: lowFeedbackCount, error: lowFeedbackCountError },
+          { data: spamReports, error: spamReportsError },
+          { data: pendingOrganisations, error: pendingOrganisationsError },
+          { data: overdueActionsRaw, error: overdueActionsError },
+          { data: lowFeedbackRows, error: lowFeedbackRowsError },
+        ] = await Promise.all([
+          adminClient
+            .from("reports")
+            .select("report_id", { count: "exact", head: true })
+            .eq("is_spam", true),
+          adminClient
+            .from("organisations")
+            .select("organization_id", { count: "exact", head: true })
+            .eq("approval_status", "pending"),
+          adminClient
+            .from("report_actions")
+            .select("action_id", { count: "exact", head: true })
+            .not("due_date", "is", null)
+            .lt("due_date", todayIso)
+            .not("status", "in", "(resolved,successful)"),
+          adminClient
+            .from("feedbacks")
+            .select("id", { count: "exact", head: true })
+            .lte("rate", 2),
+          adminClient
+            .from("reports")
+            .select("report_id,report_code,title,created_at,spam_score")
+            .eq("is_spam", true)
+            .order("created_at", { ascending: false })
+            .limit(6),
+          adminClient
+            .from("organisations")
+            .select("organization_id,name,country,created_at")
+            .eq("approval_status", "pending")
+            .order("created_at", { ascending: false })
+            .limit(6),
+          adminClient
+            .from("report_actions")
+            .select(
+              "action_id,report_id,action_description,due_date,status,status_id,created_at,report_action_statuses(code,label)",
+            )
+            .not("due_date", "is", null)
+            .lt("due_date", todayIso)
+            .not("status", "in", "(resolved,successful)")
+            .order("due_date", { ascending: true })
+            .limit(8),
+          adminClient
+            .from("feedbacks")
+            .select("id,report_id,rate,recommed_us,created_at")
+            .lte("rate", 2)
+            .order("created_at", { ascending: false })
+            .limit(6),
+        ]);
+
+        if (spamReportsCountError) throw spamReportsCountError;
+        if (pendingOrganisationsCountError) throw pendingOrganisationsCountError;
+        if (overdueActionsCountError) throw overdueActionsCountError;
+        if (lowFeedbackCountError) throw lowFeedbackCountError;
+        if (spamReportsError) throw spamReportsError;
+        if (pendingOrganisationsError) throw pendingOrganisationsError;
+        if (overdueActionsError) throw overdueActionsError;
+        if (lowFeedbackRowsError) throw lowFeedbackRowsError;
+
+        const overdueActions = (overdueActionsRaw ?? []).map((action) => {
+          const relation = Array.isArray(action.report_action_statuses)
+            ? action.report_action_statuses[0] ?? null
+            : action.report_action_statuses ?? null;
+          return {
+            ...action,
+            status_code: relation?.code ?? action.status ?? null,
+            status_label: relation?.label ?? action.status ?? null,
+          };
+        });
+
+        const reportIds = Array.from(
+          new Set([
+            ...(spamReports ?? []).map((row) => row.report_id),
+            ...overdueActions.map((row) => row.report_id),
+            ...(lowFeedbackRows ?? [])
+              .map((row) => row.report_id)
+              .filter(Boolean),
+          ]),
+        ) as number[];
+
+        const { data: linkedReports, error: linkedReportsError } = reportIds.length
+          ? await adminClient
+              .from("reports")
+              .select("report_id,report_code,title")
+              .in("report_id", reportIds)
+          : { data: [], error: null };
+        if (linkedReportsError) throw linkedReportsError;
+
+        const reportMap = new Map((linkedReports ?? []).map((row) => [row.report_id, row]));
+
+        const spamItems = (spamReports ?? []).map((row) => ({
+          id: `spam-${row.report_id}`,
+          kind: "spam_report",
+          severity: "high",
+          title: row.title?.trim() || "Spam report flagged",
+          subtitle: row.report_code ? `Report ${row.report_code}` : "Spam queue item",
+          occurred_at: row.created_at,
+          link_path: row.report_code
+            ? `/portal/admin/reports?report=${encodeURIComponent(row.report_code)}`
+            : "/portal/admin/spam",
+          link_label: "Open report",
+          meta:
+            row.spam_score !== null && row.spam_score !== undefined
+              ? `Spam score: ${row.spam_score}`
+              : "Flagged by spam filter",
+        }));
+
+        const organisationItems = (pendingOrganisations ?? []).map((row) => ({
+          id: `org-${row.organization_id}`,
+          kind: "pending_organisation",
+          severity: "medium",
+          title: row.name?.trim() || "Organisation pending review",
+          subtitle: row.country ? `Country: ${row.country}` : "Approval required",
+          occurred_at: row.created_at,
+          link_path: "/portal/admin/organisations",
+          link_label: "Review organisation",
+          meta: "Pending approval",
+        }));
+
+        const overdueActionItems = overdueActions.map((row) => {
+          const linkedReport = reportMap.get(row.report_id);
+          return {
+            id: `action-${row.action_id}`,
+            kind: "overdue_action",
+            severity: "high",
+            title: row.action_description?.trim() || "Overdue action",
+            subtitle: linkedReport?.report_code
+              ? `Report ${linkedReport.report_code}`
+              : "Linked report",
+            occurred_at: row.due_date || row.created_at,
+            link_path: linkedReport?.report_code
+              ? `/portal/admin/reports?report=${encodeURIComponent(linkedReport.report_code)}`
+              : "/portal/admin/reports",
+            link_label: "Open action context",
+            meta: row.status_label
+              ? `Status: ${row.status_label}`
+              : row.status_code
+                ? `Status: ${row.status_code}`
+                : "Status unknown",
+          };
+        });
+
+        const lowFeedbackItems = (lowFeedbackRows ?? []).map((row) => {
+          const linkedReport = row.report_id ? reportMap.get(row.report_id) : null;
+          const rating = Number(row.rate ?? 0);
+          return {
+            id: `feedback-${row.id}`,
+            kind: "low_feedback",
+            severity: rating <= 1 ? "high" : "medium",
+            title: `Low feedback rating (${rating}/5)`,
+            subtitle: linkedReport?.report_code
+              ? `Report ${linkedReport.report_code}`
+              : "Feedback without report",
+            occurred_at: row.created_at,
+            link_path: linkedReport?.report_code
+              ? `/portal/admin/reports?report=${encodeURIComponent(linkedReport.report_code)}`
+              : "/portal/admin/feedbacks",
+            link_label: "Open details",
+            meta:
+              row.recommed_us === null
+                ? "Recommendation not provided"
+                : row.recommed_us
+                  ? "Recommended the service"
+                  : "Did not recommend the service",
+          };
+        });
+
+        const items = [...spamItems, ...organisationItems, ...overdueActionItems, ...lowFeedbackItems]
+          .sort(
+            (a, b) => new Date(b.occurred_at ?? 0).getTime() - new Date(a.occurred_at ?? 0).getTime(),
+          )
+          .slice(0, 20);
+
+        return jsonResponse(200, {
+          success: true,
+          data: {
+            summary: {
+              spamReports: spamReportsCount ?? 0,
+              pendingOrganisations: pendingOrganisationsCount ?? 0,
+              overdueActions: overdueActionsCount ?? 0,
+              lowFeedback: lowFeedbackCount ?? 0,
+            },
+            items,
+          },
+        });
+      }
       case "listUsers": {
         const { data: users, error } = await adminClient
           .from("user_profiles")
           .select(
-            "user_id,first_name,last_name,display_name,email,department,created_at,user_type,is_active,owned_organization_id",
+            "user_id,first_name,last_name,display_name,email,department,job_title,created_at,user_type,is_active,owned_organization_id",
           )
           .order("created_at", { ascending: false });
         if (error) throw error;
@@ -184,12 +398,35 @@ serve(async (req) => {
       case "updateUser": {
         const { user_id, ...updates } = payload ?? {};
         if (!user_id) throw new Error("user_id is required.");
-        const allowed = {
-          user_type: updates.user_type,
-          is_active: updates.is_active,
-          department: updates.department,
-          job_title: updates.job_title,
-        };
+
+        const allowed: Record<string, unknown> = {};
+
+        if (typeof updates.user_type === "string") {
+          const normalizedUserType = normalizeUserType(updates.user_type);
+          if (!ALLOWED_USER_TYPES.has(normalizedUserType)) {
+            throw new Error("Invalid user_type.");
+          }
+          allowed.user_type = normalizedUserType;
+        }
+
+        if (typeof updates.is_active === "boolean") {
+          allowed.is_active = updates.is_active;
+        }
+
+        if (typeof updates.department === "string") {
+          const department = updates.department.trim();
+          allowed.department = department || null;
+        }
+
+        if (typeof updates.job_title === "string") {
+          const jobTitle = updates.job_title.trim();
+          allowed.job_title = jobTitle || null;
+        }
+
+        if (!Object.keys(allowed).length) {
+          throw new Error("No valid fields provided for update.");
+        }
+
         const { error } = await adminClient
           .from("user_profiles")
           .update(allowed)
@@ -440,6 +677,71 @@ serve(async (req) => {
             published_at: new Date().toISOString(),
           })
           .eq("id", Number(id));
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
+      case "unpublishIntakeFormConfig": {
+        const { id } = payload ?? {};
+        if (!id) throw new Error("id is required.");
+        const configId = Number(id);
+
+        const { data: config, error: configError } = await adminClient
+          .from("intake_form_configs")
+          .select("id")
+          .eq("id", configId)
+          .maybeSingle();
+        if (configError) throw configError;
+        if (!config) throw new Error("Config not found.");
+
+        const { error } = await adminClient
+          .from("intake_form_configs")
+          .update({
+            status: "draft",
+            is_active: false,
+            published_by_user: null,
+            published_at: null,
+          })
+          .eq("id", configId);
+        if (error) throw error;
+        return jsonResponse(200, { success: true });
+      }
+      case "deleteIntakeFormConfig": {
+        const { id } = payload ?? {};
+        if (!id) throw new Error("id is required.");
+        const configId = Number(id);
+
+        const { data: config, error: configError } = await adminClient
+          .from("intake_form_configs")
+          .select("id,config_key,country_id,program_code,status,is_active")
+          .eq("id", configId)
+          .maybeSingle();
+        if (configError) throw configError;
+        if (!config) throw new Error("Config not found.");
+
+        const isDefaultGlobalConfig =
+          config.config_key === "default" &&
+          config.country_id === null &&
+          config.program_code === null;
+        if (isDefaultGlobalConfig) {
+          throw new Error("Default global intake form cannot be removed.");
+        }
+        if (config.status === "published" || config.is_active) {
+          throw new Error("Unpublish this form before removing it.");
+        }
+
+        const { count: reportUsageCount, error: reportUsageError } = await adminClient
+          .from("reports")
+          .select("report_id", { count: "exact", head: true })
+          .eq("intake_form_config_id", configId);
+        if (reportUsageError) throw reportUsageError;
+        if ((reportUsageCount ?? 0) > 0) {
+          throw new Error("This form is referenced by reports and cannot be removed.");
+        }
+
+        const { error } = await adminClient
+          .from("intake_form_configs")
+          .delete()
+          .eq("id", configId);
         if (error) throw error;
         return jsonResponse(200, { success: true });
       }

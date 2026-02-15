@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import EmptyState from "@/components/portal/EmptyState";
 import Modal from "@/components/portal/Modal";
 import SectionCard from "@/components/portal/SectionCard";
@@ -158,6 +159,7 @@ const detailSections = [
 ];
 
 export default function ReportsPage() {
+  const searchParams = useSearchParams();
   const [reports, setReports] = useState<ReportRow[]>([]);
   const [activeTab, setActiveTab] = useState("all");
   const [open, setOpen] = useState(false);
@@ -530,7 +532,7 @@ export default function ReportsPage() {
     }
   };
 
-  const openDetails = async (reportId: number) => {
+  const openDetails = useCallback(async (reportId: number) => {
     setLoadingDetails(true);
     setError(null);
     try {
@@ -566,7 +568,18 @@ export default function ReportsPage() {
     } finally {
       setLoadingDetails(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const targetCode = searchParams.get("report")?.trim().toLowerCase();
+    if (!targetCode || loadingDetails) return;
+
+    const match = reports.find((row) => row.report_code.toLowerCase() === targetCode);
+    if (!match) return;
+    if (details?.report?.report_id === match.report_id) return;
+
+    void openDetails(match.report_id);
+  }, [details?.report?.report_id, loadingDetails, openDetails, reports, searchParams]);
 
   useEffect(() => {
     let isMounted = true;

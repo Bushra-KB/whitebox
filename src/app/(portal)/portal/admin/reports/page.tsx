@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import SectionCard from "@/components/portal/SectionCard";
 import { adminInvoke } from "@/lib/adminApi";
 import { supabase } from "@/lib/supabase/client";
@@ -153,6 +154,7 @@ const statusOptions = [
 ];
 
 export default function AdminReportsPage() {
+  const searchParams = useSearchParams();
   const [rows, setRows] = useState<ReportRow[]>([]);
   const [statusFilter, setStatusFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -385,7 +387,7 @@ export default function AdminReportsPage() {
     }
   };
 
-  const openDetails = async (reportId: number) => {
+  const openDetails = useCallback(async (reportId: number) => {
     setIsLoadingDetails(true);
     setError(null);
     try {
@@ -398,7 +400,18 @@ export default function AdminReportsPage() {
     } finally {
       setIsLoadingDetails(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const targetCode = searchParams.get("report")?.trim().toLowerCase();
+    if (!targetCode || isLoadingDetails) return;
+
+    const match = rows.find((row) => row.report_code.toLowerCase() === targetCode);
+    if (!match) return;
+    if (details?.report?.report_id === match.report_id) return;
+
+    void openDetails(match.report_id);
+  }, [details?.report?.report_id, isLoadingDetails, openDetails, rows, searchParams]);
 
   useEffect(() => {
     let isMounted = true;

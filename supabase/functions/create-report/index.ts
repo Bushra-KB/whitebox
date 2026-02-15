@@ -33,6 +33,8 @@ type CreateReportPayload = {
   reporter_display_name?: string | null;
   reporter_phone?: string | null;
   reporter_location?: string | null;
+  reporter_age?: number | null;
+  reporter_gender?: string | null;
   reported_org_id: number;
   title: string;
   description: string;
@@ -253,6 +255,8 @@ serve(async (req) => {
           reporter_org_id: null,
           reporter_email: payload.reporter_email ?? reporter.email,
           is_anonymous: payload.is_anonymous ?? false,
+          reporter_age: payload.reporter_age ?? null,
+          reporter_gender: payload.reporter_gender ?? null,
           status: "pre_evaluation",
           status_id: defaultStatus?.status_id ?? null,
           share_contact_with_company: payload.share_contact_with_company ?? false,

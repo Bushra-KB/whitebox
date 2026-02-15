@@ -34,12 +34,6 @@ type WorksiteOption = {
 };
 type CategoryOption = { id: number; name: string };
 type SubCategoryOption = { id: number; name: string; categoryId: number };
-type RelatedOrgOption = {
-  id: number;
-  name: string;
-  relationTypeName: string;
-  relationKind: "direct" | "indirect" | "other";
-};
 type IntakeOrganizationRow = {
   organization_id: number;
   name: string;
@@ -518,8 +512,6 @@ export default function ReportNewPage() {
   const [worksiteOptions, setWorksiteOptions] = useState<WorksiteOption[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<CategoryOption[]>([]);
   const [subCategoryOptions, setSubCategoryOptions] = useState<SubCategoryOption[]>([]);
-  const [directRelationshipOptions, setDirectRelationshipOptions] = useState<RelatedOrgOption[]>([]);
-  const [indirectRelationshipOptions, setIndirectRelationshipOptions] = useState<RelatedOrgOption[]>([]);
   const [intakeCopy, setIntakeCopy] = useState<IntakeCopyMap>({});
   const [easyReadMode, setEasyReadMode] = useState(false);
   const [audioMode, setAudioMode] = useState(true);
@@ -532,8 +524,14 @@ export default function ReportNewPage() {
   const [showErrors, setShowErrors] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submittedReportId, setSubmittedReportId] = useState<number | null>(null);
   const [activeIntakeConfig, setActiveIntakeConfig] = useState<ActiveIntakeConfig | null>(null);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string | string[] | boolean>>({});
+  const [feedbackRating, setFeedbackRating] = useState(0);
+  const [feedbackRecommend, setFeedbackRecommend] = useState<boolean | null>(null);
+  const [feedbackNote, setFeedbackNote] = useState("");
+  const [isSavingFeedback, setIsSavingFeedback] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
 
   const [companyForm, setCompanyForm] = useState({
     name: "",
@@ -1264,75 +1262,6 @@ export default function ReportNewPage() {
     loadWorksites();
   }, [form.incidentCompany]);
 
-  useEffect(() => {
-    const loadRelatedOrganizations = async () => {
-      const orgId = Number(form.incidentCompany);
-      if (!orgId) {
-        setDirectRelationshipOptions([]);
-        setIndirectRelationshipOptions([]);
-        setForm((prev) => ({
-          ...prev,
-          directCustomerTargets: [],
-          indirectCustomerTargets: [],
-        }));
-        return;
-      }
-
-      const { data: relationshipRows } = await supabase
-        .from("organization_relationships")
-        .select(
-          "relationship_id,parent_org_id,child_org_id,relationship_types(name),parent_org:organisations!organization_relationships_parent_org_id_fkey(organization_id,name),child_org:organisations!organization_relationships_child_org_id_fkey(organization_id,name)"
-        )
-        .or(`parent_org_id.eq.${orgId},child_org_id.eq.${orgId}`)
-        .order("relationship_id", { ascending: false });
-
-      const options: RelatedOrgOption[] = (relationshipRows ?? [])
-        .map((row) => {
-          const parent = Array.isArray(row.parent_org) ? row.parent_org[0] : row.parent_org;
-          const child = Array.isArray(row.child_org) ? row.child_org[0] : row.child_org;
-          const relationType = Array.isArray(row.relationship_types)
-            ? row.relationship_types[0]
-            : row.relationship_types;
-          const isIncidentParent = row.parent_org_id === orgId;
-          const relatedOrg = isIncidentParent ? child : parent;
-          if (!relatedOrg?.organization_id || !relatedOrg?.name) return null;
-          const typeName = (relationType?.name ?? "").toLowerCase();
-          const relationKind: RelatedOrgOption["relationKind"] = typeName.includes("indirect")
-            ? "indirect"
-            : typeName.includes("direct")
-              ? "direct"
-              : "other";
-          return {
-            id: relatedOrg.organization_id,
-            name: relatedOrg.name,
-            relationTypeName: relationType?.name ?? "Relationship",
-            relationKind,
-          };
-        })
-        .filter((item): item is RelatedOrgOption => Boolean(item));
-
-      const uniqueById = Array.from(
-        new Map(options.map((item) => [item.id, item])).values()
-      );
-      const direct = uniqueById.filter((item) => item.relationKind !== "indirect");
-      const indirect = uniqueById.filter((item) => item.relationKind !== "direct");
-
-      setDirectRelationshipOptions(direct);
-      setIndirectRelationshipOptions(indirect);
-      setForm((prev) => ({
-        ...prev,
-        directCustomerTargets: prev.directCustomerTargets.filter((id) =>
-          direct.some((item) => String(item.id) === id)
-        ),
-        indirectCustomerTargets: prev.indirectCustomerTargets.filter((id) =>
-          indirect.some((item) => String(item.id) === id)
-        ),
-      }));
-    };
-
-    loadRelatedOrganizations();
-  }, [form.incidentCompany]);
-
   const countryNameById = useMemo(
     () => Object.fromEntries(countryOptions.map((country) => [country.id, country.name])),
     [countryOptions]
@@ -1535,9 +1464,9 @@ export default function ReportNewPage() {
         if (!isValidPhone(form.reporterPhone)) {
           errors.reporterPhone = t("error_phone_invalid", "Enter a valid phone number.");
         }
-        if (!isValidAge(form.reporterAge)) {
-          errors.reporterAge = t("error_age_invalid", "Enter a valid age.");
-        }
+      }
+      if (!isValidAge(form.reporterAge)) {
+        errors.reporterAge = t("error_age_invalid", "Enter a valid age.");
       }
       if (form.reportingForSomeoneElse) {
         if (!form.representativeRelation.trim()) {
@@ -1598,18 +1527,6 @@ export default function ReportNewPage() {
         errors.alertIndirectCustomers = t(
           "error_indirect_alert_required",
           "Select whether indirect customers should be alerted."
-        );
-      }
-      if (form.alertDirectCustomers === "yes" && form.directCustomerTargets.length === 0) {
-        errors.directCustomerTargets = t(
-          "error_direct_target_required",
-          "Select at least one direct customer target."
-        );
-      }
-      if (form.alertIndirectCustomers === "yes" && form.indirectCustomerTargets.length === 0) {
-        errors.indirectCustomerTargets = t(
-          "error_indirect_target_required",
-          "Select at least one indirect customer target."
         );
       }
     }
@@ -1729,6 +1646,7 @@ export default function ReportNewPage() {
   const submitReport = async () => {
     setIsSubmitting(true);
     setSubmitError(null);
+    setSubmittedReportId(null);
 
     try {
       const authId = await ensureReporterAuth();
@@ -1765,6 +1683,8 @@ export default function ReportNewPage() {
         alert_direct_suppliers: form.alertDirectCustomers === "yes",
         alert_indirect_suppliers: form.alertIndirectCustomers === "yes",
         original_language: inputLanguageName,
+        reporter_age: form.reporterAge ? Number(form.reporterAge) : null,
+        reporter_gender: form.reporterGender || null,
         intake_version: "v1",
         intake_form_config_id: activeIntakeConfig?.config?.id ?? null,
         intake_form_version: activeIntakeConfig?.config?.version ?? null,
@@ -1776,6 +1696,8 @@ export default function ReportNewPage() {
           input_language: inputLanguageName,
           form_country: formCountryName,
           reporter_country: reporterCountryName,
+          reporter_age: form.reporterAge ? Number(form.reporterAge) : null,
+          reporter_gender: form.reporterGender || null,
           form_type: form.formType,
           procedure_type: form.procedureType,
           incident_company_name: selectedCompany?.name || null,
@@ -1857,13 +1779,25 @@ export default function ReportNewPage() {
       }
 
       if (form.isAnonymous && data && typeof data === "object") {
-        const response = data as { reporter_email?: string; reporter_password?: string };
+        const response = data as {
+          report_id?: number;
+          reporter_email?: string;
+          reporter_password?: string;
+        };
+        if (typeof response.report_id === "number") {
+          setSubmittedReportId(response.report_id);
+        }
         if (response.reporter_email && response.reporter_password) {
           setForm((prev) => ({
             ...prev,
             reporterEmail: response.reporter_email || prev.reporterEmail,
             reporterPassword: response.reporter_password || prev.reporterPassword,
           }));
+        }
+      } else if (data && typeof data === "object") {
+        const response = data as { report_id?: number };
+        if (typeof response.report_id === "number") {
+          setSubmittedReportId(response.report_id);
         }
       }
 
@@ -1999,6 +1933,48 @@ export default function ReportNewPage() {
       country: "",
     });
     setWorksiteErrors({});
+  };
+
+  const submitFeedback = async () => {
+    setFeedbackError(null);
+    if (!submittedReportId) {
+      setFeedbackError(t("error_feedback_report_missing", "Report reference missing."));
+      return;
+    }
+    if (feedbackRating < 1 || feedbackRating > 5) {
+      setFeedbackError(t("error_feedback_rating_required", "Please select a rating."));
+      return;
+    }
+
+    setIsSavingFeedback(true);
+    try {
+      const { error: feedbackInsertError } = await supabase.from("feedbacks").insert({
+        report_id: submittedReportId,
+        rate: feedbackRating,
+        recommed_us: feedbackRecommend ?? feedbackRating >= 4,
+      });
+      if (feedbackInsertError) throw feedbackInsertError;
+
+      if (feedbackNote.trim()) {
+        await supabase.from("report_comments").insert({
+          report_id: submittedReportId,
+          comment_text: `[Reporter feedback] ${feedbackNote.trim()}`,
+        });
+      }
+
+      setShowFeedback(false);
+      setFeedbackRating(0);
+      setFeedbackRecommend(null);
+      setFeedbackNote("");
+    } catch (err) {
+      setFeedbackError(
+        err instanceof Error
+          ? err.message
+          : t("error_feedback_submit_failed", "Unable to submit feedback.")
+      );
+    } finally {
+      setIsSavingFeedback(false);
+    }
   };
 
   const renderCustomFields = () => {
@@ -2591,7 +2567,11 @@ export default function ReportNewPage() {
                       </option>
                     ))}
                   </select>
-                  <div>
+                </div>
+              )}
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
                   <input
                     className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm"
                     placeholder={t("age_placeholder", "Age")}
@@ -2601,26 +2581,25 @@ export default function ReportNewPage() {
                     value={form.reporterAge}
                     onChange={(event) => update("reporterAge", digitsOnly(event.target.value))}
                   />
-                    {showErrors && formErrors.reporterAge ? (
-                      <p className="mt-1 text-xs text-rose-500">{formErrors.reporterAge}</p>
-                    ) : null}
-                    {renderInlineHelp(
-                      "reporter_age",
-                      "Use digits only (0-120). Age helps route safeguarding workflows where needed.",
-                      "Type your age as a number."
-                    )}
-                  </div>
-                  <select
-                    className="rounded-xl border border-slate-200 px-4 py-3 text-sm"
-                    value={form.reporterGender}
-                    onChange={(event) => update("reporterGender", event.target.value)}
-                  >
-                    <option value="">{t("gender_placeholder", "Gender")}</option>
-                    <option value="male">{t("gender_male_option", "Male")}</option>
-                    <option value="female">{t("gender_female_option", "Female")}</option>
-                  </select>
+                  {showErrors && formErrors.reporterAge ? (
+                    <p className="mt-1 text-xs text-rose-500">{formErrors.reporterAge}</p>
+                  ) : null}
+                  {renderInlineHelp(
+                    "reporter_age",
+                    "Use digits only (0-120). Age helps route safeguarding workflows where needed.",
+                    "Type your age as a number."
+                  )}
                 </div>
-              )}
+                <select
+                  className="rounded-xl border border-slate-200 px-4 py-3 text-sm"
+                  value={form.reporterGender}
+                  onChange={(event) => update("reporterGender", event.target.value)}
+                >
+                  <option value="">{t("gender_placeholder", "Gender")}</option>
+                  <option value="male">{t("gender_male_option", "Male")}</option>
+                  <option value="female">{t("gender_female_option", "Female")}</option>
+                </select>
+              </div>
 
               <label className="flex items-center gap-3 text-sm text-slate-700">
                 <input
@@ -3002,16 +2981,16 @@ export default function ReportNewPage() {
                       "step5_help",
                       helpText(
                         "step5_help",
-                        "Choose whether direct and indirect customers should be alerted. If yes, select one or more target organizations.",
-                        "Should we alert related companies? Pick yes/no, then select names."
+                        "Choose whether direct and indirect customers should be alerted.",
+                        "Should we alert related companies? Pick yes or no."
                       )
                     )
                   }
                 >
                   {helpText(
                     "step5_help",
-                    "Choose whether direct and indirect customers should be alerted. If yes, select one or more target organizations.",
-                    "Should we alert related companies? Pick yes/no, then select names."
+                    "Choose whether direct and indirect customers should be alerted.",
+                    "Should we alert related companies? Pick yes or no."
                   )}
                 </button>
               </div>
@@ -3045,46 +3024,6 @@ export default function ReportNewPage() {
                 {showErrors && formErrors.alertDirectCustomers ? (
                   <p className="mt-2 text-xs text-rose-500">{formErrors.alertDirectCustomers}</p>
                 ) : null}
-
-                {form.alertDirectCustomers === "yes" ? (
-                  <div className="mt-4 space-y-2 rounded-xl border border-slate-200 p-3">
-                    {directRelationshipOptions.length ? (
-                      directRelationshipOptions.map((option) => {
-                        const checked = form.directCustomerTargets.includes(String(option.id));
-                        return (
-                          <label key={`direct-${option.id}`} className="flex items-start gap-3 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(event) => {
-                                const nextSet = new Set(form.directCustomerTargets);
-                                if (event.target.checked) nextSet.add(String(option.id));
-                                else nextSet.delete(String(option.id));
-                                update("directCustomerTargets", Array.from(nextSet));
-                              }}
-                            />
-                            <span>
-                              <span className="font-medium text-slate-800">{option.name}</span>
-                              <span className="ml-2 text-xs text-slate-500">
-                                {option.relationTypeName}
-                              </span>
-                            </span>
-                          </label>
-                        );
-                      })
-                    ) : (
-                      <p className="text-xs text-slate-500">
-                        {t(
-                          "no_direct_relationship_targets",
-                          "No direct relationship targets found for this organization."
-                        )}
-                      </p>
-                    )}
-                    {showErrors && formErrors.directCustomerTargets ? (
-                      <p className="mt-1 text-xs text-rose-500">{formErrors.directCustomerTargets}</p>
-                    ) : null}
-                  </div>
-                ) : null}
               </div>
 
               <div className="rounded-2xl border border-slate-200 p-4">
@@ -3115,46 +3054,6 @@ export default function ReportNewPage() {
                 </div>
                 {showErrors && formErrors.alertIndirectCustomers ? (
                   <p className="mt-2 text-xs text-rose-500">{formErrors.alertIndirectCustomers}</p>
-                ) : null}
-
-                {form.alertIndirectCustomers === "yes" ? (
-                  <div className="mt-4 space-y-2 rounded-xl border border-slate-200 p-3">
-                    {indirectRelationshipOptions.length ? (
-                      indirectRelationshipOptions.map((option) => {
-                        const checked = form.indirectCustomerTargets.includes(String(option.id));
-                        return (
-                          <label key={`indirect-${option.id}`} className="flex items-start gap-3 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(event) => {
-                                const nextSet = new Set(form.indirectCustomerTargets);
-                                if (event.target.checked) nextSet.add(String(option.id));
-                                else nextSet.delete(String(option.id));
-                                update("indirectCustomerTargets", Array.from(nextSet));
-                              }}
-                            />
-                            <span>
-                              <span className="font-medium text-slate-800">{option.name}</span>
-                              <span className="ml-2 text-xs text-slate-500">
-                                {option.relationTypeName}
-                              </span>
-                            </span>
-                          </label>
-                        );
-                      })
-                    ) : (
-                      <p className="text-xs text-slate-500">
-                        {t(
-                          "no_indirect_relationship_targets",
-                          "No indirect relationship targets found for this organization."
-                        )}
-                      </p>
-                    )}
-                    {showErrors && formErrors.indirectCustomerTargets ? (
-                      <p className="mt-1 text-xs text-rose-500">{formErrors.indirectCustomerTargets}</p>
-                    ) : null}
-                  </div>
                 ) : null}
               </div>
             </div>
@@ -3422,6 +3321,8 @@ export default function ReportNewPage() {
                   <p>{t("review_email_label", "Email")}: {form.reporterEmail || t("anonymous_label", "Anonymous")}</p>
                   <p>{t("review_name_label", "Name")}: {form.reporterName || t("anonymous_label", "Anonymous")}</p>
                   <p>{t("review_phone_label", "Phone")}: {form.reporterPhone || "-"}</p>
+                  <p>{t("review_age_label", "Age")}: {form.reporterAge || "-"}</p>
+                  <p>{t("review_gender_label", "Gender")}: {form.reporterGender || "-"}</p>
                   <p>
                     {t("review_country_label", "Country")}: {countryNameById[form.reporterCountry] || form.reporterCountry || "-"}
                   </p>
@@ -3480,7 +3381,10 @@ export default function ReportNewPage() {
               <div className="flex flex-wrap justify-center gap-3">
                 <button
                   className="rounded-full bg-[var(--wb-navy)] px-5 py-2 text-sm text-white"
-                  onClick={() => setShowFeedback(true)}
+                  onClick={() => {
+                    setFeedbackError(null);
+                    setShowFeedback(true);
+                  }}
                   type="button"
                 >
                   {t("leave_feedback_button", "Leave feedback")}
@@ -3595,6 +3499,37 @@ export default function ReportNewPage() {
               </span>
               <p className="mt-1 text-xs text-slate-500">
                 {t("channel_sms_help", "Short message intake")}
+              </p>
+            </a>
+            <a
+              href="#"
+              className="group rounded-2xl border border-slate-200 bg-white p-3 transition hover:-translate-y-0.5 hover:border-cyan-300 hover:shadow-sm"
+            >
+              <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                <svg viewBox="0 0 24 24" className="h-4 w-4 text-cyan-600" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M22 2 11 13" />
+                  <path d="m22 2-7 20-4-9-9-4Z" />
+                </svg>
+                {t("channel_telegram_label", "Telegram")}
+              </span>
+              <p className="mt-1 text-xs text-slate-500">
+                {t("channel_telegram_help", "Telegram intake channel")}
+              </p>
+            </a>
+            <a
+              href="#"
+              className="group rounded-2xl border border-slate-200 bg-white p-3 transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-sm"
+            >
+              <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                <svg viewBox="0 0 24 24" className="h-4 w-4 text-amber-600" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M9 10a3 3 0 0 1 6 0v1" />
+                  <rect x="8" y="11" width="8" height="6" rx="1.5" />
+                </svg>
+                {t("channel_ai_agent_label", "AI Agent")}
+              </span>
+              <p className="mt-1 text-xs text-slate-500">
+                {t("channel_ai_agent_help", "Openclaw-assisted intake")}
               </p>
             </a>
           </div>
@@ -3736,29 +3671,67 @@ export default function ReportNewPage() {
             <p className="mt-3 text-sm text-slate-600">
               {t("feedback_question", "How satisfied are you with the service provided?")}
             </p>
-            <div className="mt-3 flex gap-2 text-slate-300">
-              {Array.from({ length: 5 }).map((_, index) => (
-                <span key={index}>★</span>
-              ))}
+            <div className="mt-3 flex gap-2">
+              {Array.from({ length: 5 }).map((_, index) => {
+                const ratingValue = index + 1;
+                const selected = feedbackRating >= ratingValue;
+                return (
+                  <button
+                    key={ratingValue}
+                    type="button"
+                    className={`text-xl ${selected ? "text-amber-400" : "text-slate-300"}`}
+                    onClick={() => setFeedbackRating(ratingValue)}
+                    aria-label={`Rate ${ratingValue}`}
+                  >
+                    ★
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex gap-2 text-xs">
+              <button
+                type="button"
+                className={`rounded-full border px-3 py-1 ${feedbackRecommend === true ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-600"}`}
+                onClick={() => setFeedbackRecommend(true)}
+              >
+                {t("yes", "Yes")}
+              </button>
+              <button
+                type="button"
+                className={`rounded-full border px-3 py-1 ${feedbackRecommend === false ? "border-rose-300 bg-rose-50 text-rose-700" : "border-slate-200 text-slate-600"}`}
+                onClick={() => setFeedbackRecommend(false)}
+              >
+                {t("no", "No")}
+              </button>
             </div>
             <textarea
               className="mt-4 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm"
               rows={3}
               placeholder={t("feedback_placeholder", "Share feedback or suggestions")}
+              value={feedbackNote}
+              onChange={(event) => setFeedbackNote(event.target.value)}
             />
+            {feedbackError ? (
+              <p className="mt-2 text-xs text-rose-500">{feedbackError}</p>
+            ) : null}
             <div className="mt-5 flex gap-3">
               <button
                 className="flex-1 rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-600"
                 onClick={() => setShowFeedback(false)}
                 type="button"
+                disabled={isSavingFeedback}
               >
                 {t("cancel_button", "Cancel")}
               </button>
               <button
                 className="flex-1 rounded-full bg-[var(--wb-navy)] px-4 py-2 text-sm text-white"
                 type="button"
+                onClick={submitFeedback}
+                disabled={isSavingFeedback}
               >
-                {t("save_button", "Save")}
+                {isSavingFeedback
+                  ? t("submitting_button", "Submitting...")
+                  : t("save_button", "Save")}
               </button>
             </div>
           </div>

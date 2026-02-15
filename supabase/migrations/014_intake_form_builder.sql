@@ -221,8 +221,8 @@ begin
       (v_config_id, 'reporterName', 'core', 'text', 'step_3', 40, true, false, 'intake_payload.reporter_name'),
       (v_config_id, 'reporterPhone', 'core', 'text', 'step_3', 50, true, false, 'intake_payload.reporter_phone'),
       (v_config_id, 'reporterCountry', 'core', 'text', 'step_3', 60, true, false, 'intake_payload.reporter_country'),
-      (v_config_id, 'reporterAge', 'core', 'number', 'step_3', 70, true, false, 'intake_payload.reporter_age'),
-      (v_config_id, 'reporterGender', 'core', 'select', 'step_3', 80, true, false, 'intake_payload.reporter_gender'),
+      (v_config_id, 'reporterAge', 'core', 'number', 'step_3', 70, true, false, 'reports.reporter_age'),
+      (v_config_id, 'reporterGender', 'core', 'select', 'step_3', 80, true, false, 'reports.reporter_gender'),
       (v_config_id, 'reportingForSomeoneElse', 'core', 'checkbox', 'step_3', 90, true, false, 'intake_payload.reporting_for_someone_else'),
       (v_config_id, 'representativeRelation', 'core', 'text', 'step_3', 100, true, false, 'intake_payload.representative_relation'),
       (v_config_id, 'representativeReason', 'core', 'text', 'step_3', 110, true, false, 'intake_payload.representative_reason'),
@@ -241,9 +241,7 @@ begin
       (v_config_id, 'ngoSupportDetails', 'core', 'textarea', 'step_5', 40, true, false, 'intake_payload.ngo_support_details'),
 
       (v_config_id, 'alertDirectCustomers', 'core', 'radio', 'step_6', 10, true, true, 'reports.alert_direct_suppliers'),
-      (v_config_id, 'directCustomerTargets', 'core', 'multiselect', 'step_6', 20, true, false, 'intake_payload.direct_customer_targets'),
       (v_config_id, 'alertIndirectCustomers', 'core', 'radio', 'step_6', 30, true, true, 'reports.alert_indirect_suppliers'),
-      (v_config_id, 'indirectCustomerTargets', 'core', 'multiselect', 'step_6', 40, true, false, 'intake_payload.indirect_customer_targets'),
 
       (v_config_id, 'incidentType', 'core', 'radio', 'step_7', 10, true, true, 'intake_payload.incident_type'),
       (v_config_id, 'subject', 'core', 'text', 'step_7', 20, true, true, 'reports.title'),
